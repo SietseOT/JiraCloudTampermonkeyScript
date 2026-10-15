@@ -1,0 +1,12 @@
+# Geheimen: nooit uploaden
+.env
+.env.*
+!.env.example
+
+# Lokale instellingen van Claude
+.claude/
+
+# Interne documenten en oude bron: niet in de openbare repository
+bron/
+Rapport_overige_functies.md
+Jira_Cloud_Tampermonkey_NOTE.md
