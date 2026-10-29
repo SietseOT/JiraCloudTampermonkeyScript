@@ -26,6 +26,7 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
   | Label | Weergave |
   |---|---|
   | `deadline…` (bijv. `deadline:2026-10-12`) | 📅 Deadline 12-10-2026 (blauw, vóór de titel) |
+  | veld *Due date* ingevuld | 📅 Deadline 12-10-2026 (zelfde badge, los van het label; tooltip "Due date") |
   | `overleg…` (bijv. `overleg:2026-10-13`) | 💬 Overleg 13-10-2026 (paars, vóór de titel) |
   | `hotfix` | 🔥 Hotfix (rood) |
   | `tijdskritisch` | ⏰ Tijdskritisch (oranje) |

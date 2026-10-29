@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.4.1
+// @version      1.5.0
 // @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Alleen lezen.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
@@ -18,7 +18,7 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.4.1';
+    const SCRIPT_VERSION = '1.5.0';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
@@ -30,7 +30,8 @@
         onHoldDimsCard: true,    // kaart met label "on-hold" iets doorzichtig maken (zoals het oude script)
         backlogRows: true,       // labels in de regel van een ticket in de backlog
         backlogDividers: true,   // ticket met label "divider" als scheidingslijn in de backlog
-        flaggedYellow: true      // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
+        flaggedYellow: true,     // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
+        dueDateBadge: true       // ingevulde Due date als extra deadline-badge tonen (naast een eventueel deadline-label)
     };
 
     // =====================================================================
@@ -69,7 +70,7 @@
     // Jira-veld "Flagged" (vlag aan = gevuld). Het ID is per Jira-omgeving vast;
     // opzoeken via /rest/api/3/field als het ooit verandert.
     const FLAGGED_FIELD = 'customfield_10021';
-    const FETCH_FIELDS = `labels,${FLAGGED_FIELD}`;
+    const FETCH_FIELDS = `labels,duedate,${FLAGGED_FIELD}`;
 
     // Welk ticket staat open? Jira zet dit in de adresbalk (?selectedIssue=OT-9 of /browse/OT-9)
     const SELECTED_ISSUE_PARAM = 'selectedIssue';
@@ -99,6 +100,12 @@
     // Labels die niet als badge getoond worden (net als in het oude script)
     const HIDDEN_LABELS = new Set(['divider', 'small', 'medium', 'large', 'geen-punten', 'onduidelijk-punten']);
     const DIVIDER_LABEL = 'divider';
+
+    // De Due date wordt als nep-label aan de badges toegevoegd, met dezelfde opmaak als
+    // een deadline-label. Jira-labels kunnen geen spaties bevatten, dus dit botst nooit
+    // met een echt label.
+    const DUE_DATE_LABEL_PREFIX = 'due date ';
+    const DUE_DATE_DEF = { icon: '📅', title: 'Deadline', tooltip: 'Due date', cls: 'otcl-badge--deadline' };
 
     // =====================================================================
     // CACHE EN OPHALEN
@@ -133,6 +140,7 @@
                 const entry = data[key];
                 const malformed = !entry || !Array.isArray(entry.labels)
                     || typeof entry.flagged !== 'boolean'
+                    || (entry.dueDate !== null && typeof entry.dueDate !== 'string')
                     || typeof entry.lastFetched !== 'number' || typeof entry.lastSeen !== 'number';
                 if (malformed || now - entry.lastSeen > FORGET_AFTER) delete data[key];
             }
@@ -197,8 +205,8 @@
             const now = Date.now();
             keys.forEach(key => {
                 // Niet gevonden (verwijderd, verplaatst of geen rechten): onthouden als "geen labels"
-                const data = found[key] || { labels: [], flagged: false };
-                cache[key] = { labels: data.labels, flagged: data.flagged, lastFetched: now, lastSeen: now };
+                const data = found[key] || { labels: [], flagged: false, dueDate: null };
+                cache[key] = { labels: data.labels, flagged: data.flagged, dueDate: data.dueDate, lastFetched: now, lastSeen: now };
             });
             lastError = null;
             scheduleSave();
@@ -254,12 +262,12 @@
             if (response.status === 404) return; // verwijderd of geen rechten
             if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
             const data = await response.json();
-            const { labels, flagged } = readIssueFields(data.fields);
+            const { labels, flagged, dueDate } = readIssueFields(data.fields);
             const now = Date.now();
             const previous = cache[key];
-            cache[key] = { labels, flagged, lastFetched: now, lastSeen: now };
+            cache[key] = { labels, flagged, dueDate, lastFetched: now, lastSeen: now };
             scheduleSave();
-            const changed = !previous || previous.flagged !== flagged
+            const changed = !previous || previous.flagged !== flagged || previous.dueDate !== dueDate
                 || previous.labels.join('\u0001') !== labels.join('\u0001');
             if (changed) scheduleRun();
         } catch (err) {
@@ -278,18 +286,27 @@
         scheduleRun();
     }
 
-    /** Haalt labels en vlag uit de velden die Jira teruggeeft. */
+    /** Haalt labels, vlag en Due date uit de velden die Jira teruggeeft. */
     function readIssueFields(fields) {
         const labels = fields && Array.isArray(fields.labels) ? fields.labels : [];
         const flag = fields && fields[FLAGGED_FIELD];
         const flagged = Array.isArray(flag) ? flag.length > 0 : Boolean(flag);
-        return { labels, flagged };
+        const dueDate = fields && typeof fields.duedate === 'string' && fields.duedate ? fields.duedate : null;
+        return { labels, flagged, dueDate };
     }
 
     /** Vlag van een ticket uit de cache (null als nog onbekend). */
     function getFlagged(key) {
         const entry = cache[key];
         return entry ? entry.flagged : null;
+    }
+
+    /** Labels plus (indien ingevuld) de Due date als nep-label, voor het tonen van badges. */
+    function getBadgeLabels(key) {
+        const labels = getLabels(key);
+        const entry = cache[key];
+        if (!labels || !FEATURES.dueDateBadge || !entry || !entry.dueDate) return labels;
+        return [...labels, DUE_DATE_LABEL_PREFIX + entry.dueDate];
     }
 
     /** Haalt de labels van meerdere tickets op met één JQL-zoekopdracht. */
@@ -333,6 +350,13 @@
 
     /** Bepaalt icoon, tekst, opmaak en volgorde van één label. compact = kortere tekst voor koppen. */
     function describeLabel(label, compact) {
+        if (label.startsWith(DUE_DATE_LABEL_PREFIX)) {
+            const def = DUE_DATE_DEF;
+            const raw = label.slice(DUE_DATE_LABEL_PREFIX.length);
+            const rest = formatDateText(raw);
+            const text = compact ? rest : `${def.title} ${rest}`;
+            return { icon: def.icon, text, cls: def.cls, order: 0, tooltip: `${def.tooltip} ${raw}` };
+        }
         const lower = label.toLowerCase();
         for (const def of DATE_PREFIX_LABELS) {
             if (lower.startsWith(def.prefix)) {
@@ -353,7 +377,7 @@
         const info = describeLabel(label, compact);
         const badge = document.createElement('span');
         badge.className = info.cls ? `otcl-badge ${info.cls}` : 'otcl-badge';
-        badge.title = label;
+        badge.title = info.tooltip || label;
         if (info.icon) {
             const icon = document.createElement('span');
             icon.className = 'otcl-badge__icon';
@@ -368,6 +392,7 @@
     }
 
     function isDateLabel(label) {
+        if (label.startsWith(DUE_DATE_LABEL_PREFIX)) return true;
         const lower = label.toLowerCase();
         return DATE_PREFIX_LABELS.some(def => lower.startsWith(def.prefix));
     }
@@ -437,7 +462,7 @@
                 removeBadges(heading);
                 return;
             }
-            upsertBadges(heading, { after: anchor }, key, getLabels(key), 'header');
+            upsertBadges(heading, { after: anchor }, key, getBadgeLabels(key), 'header');
         });
     }
 
@@ -451,7 +476,7 @@
 
             const labels = getLabels(key);
             // Badges als eigen regel tussen de titel en de voettekst (sleutel/avatar)
-            upsertBadges(column, { before: footer }, key, labels, 'card');
+            upsertBadges(column, { before: footer }, key, getBadgeLabels(key), 'card');
 
             const onHold = FEATURES.onHoldDimsCard && Array.isArray(labels)
                 && labels.some(label => label.toLowerCase() === 'on-hold');
@@ -485,8 +510,9 @@
             }
 
             if (FEATURES.backlogRows && !isDivider) {
-                upsertBadges(summaryBox, { before: summary }, key, labels, 'row-lead');
-                upsertBadges(summaryBox, { after: summary }, key, labels, 'row-tail');
+                const badgeLabels = getBadgeLabels(key);
+                upsertBadges(summaryBox, { before: summary }, key, badgeLabels, 'row-lead');
+                upsertBadges(summaryBox, { after: summary }, key, badgeLabels, 'row-tail');
             } else {
                 removeBadges(summaryBox);
             }
@@ -553,7 +579,7 @@
             }
             .otcl-badges--row-lead {
                 margin-right: 6px;
-                max-width: 35%;
+                max-width: 45%; /* ruimte voor twee deadlines: label + Due date */
             }
             .otcl-badges--row-tail {
                 margin: 0 8px 0 auto;
