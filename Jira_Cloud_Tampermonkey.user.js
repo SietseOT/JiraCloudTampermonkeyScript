@@ -2,7 +2,7 @@
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
 // @version      1.5.0
-// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Alleen lezen.
+// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Wijzigt nooit zelf tickets.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
 // @grant        none
@@ -33,7 +33,8 @@
         backlogRows: true,       // labels in de regel van een ticket in de backlog
         backlogDividers: true,   // ticket met label "divider" als scheidingslijn in de backlog
         flaggedYellow: true,     // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
-        dueDateColors: true      // kader om het due date-veld in de backlog op basis van labels (zie DUE_DATE_RULES)
+        dueDateColors: true,     // kader om het due date-veld in de backlog op basis van labels (zie DUE_DATE_RULES)
+        logWorkTimeSpentOnly: true // transitievenster: "Log Work" direct open, alleen Time Spent zichtbaar
     };
 
     // Teksten in het instellingenvenster (volgorde = volgorde in het venster)
@@ -126,7 +127,17 @@
         backlogClickLayer: '[data-testid="software-backlog.card-list.card.card-contents.interaction-layer.accessible-card"]',
 
         // Het zichtbare vakje van het standaard due date-veld in een backlog-regel
-        dueDate: '[data-testid="coloured-due-date.ui.colored-due-date-container"]'
+        dueDate: '[data-testid="coloured-due-date.ui.colored-due-date-container"]',
+        // Transitievenster (status wijzigen): sectie "Log Work". Herkend aan data-testid,
+        // dus onafhankelijk van de taal van de gebruiker. Eindigt-op ($=) zodat het
+        // ook werkt als Jira het voorvoegsel per venster (ticket, bord, lijst) anders noemt.
+        worklogSection: '[data-testid$=".field.worklog"]',
+        worklogToggle: 'button[aria-expanded]',
+        worklogTimeSpent: '[data-testid$="log-work-time-spent"]',
+        worklogTimeRemaining: '[data-testid$="log-work-time-remaining"]',
+        worklogDateStarted: '[data-testid$="log-work-date-field"]',
+        // Link "Learn about logging work"; het blok eromheen bevat ook de uitlegtekst
+        worklogHelpLink: 'a[href*="TimeTrackingHelp"]'
     };
 
     const API = {
@@ -752,6 +763,58 @@
     }
 
     // =====================================================================
+    // TRANSITIEVENSTER: LOG WORK
+    // In elk statusvenster met een sectie "Log Work" klappen we die sectie
+    // automatisch open en tonen we alleen het veld Time Spent. Time Remaining
+    // en Date Started blijven gewoon in het formulier (met Jira's standaard-
+    // waarden), ze zijn alleen onzichtbaar. Werkt in elk venster, ongeacht
+    // waar het geopend wordt (ticket, paneel, bord, lijst, zoekresultaten).
+    // =====================================================================
+    const WORKLOG_MAX_CLICKS = 3;   // nooit eindeloos blijven klikken als openklappen niet lukt
+
+    function processLogWork() {
+        document.querySelectorAll(SELECTORS.worklogSection).forEach(section => {
+            if (!section.classList.contains('otcl-worklog')) section.classList.add('otcl-worklog');
+
+            // Uitlegtekst en link "Learn about logging work" zitten samen in één blok
+            const helpLink = section.querySelector(SELECTORS.worklogHelpLink);
+            const helpBlock = helpLink && closestChildOf(section, helpLink);
+            if (helpBlock && !helpBlock.classList.contains('otcl-worklog-hidden')) {
+                helpBlock.classList.add('otcl-worklog-hidden');
+            }
+
+            const toggle = section.querySelector(SELECTORS.worklogToggle);
+            if (!toggle) return;
+            const open = toggle.getAttribute('aria-expanded') === 'true';
+            const clicks = Number(section.dataset.otclClicks || 0);
+            if (!open && clicks < WORKLOG_MAX_CLICKS) {
+                section.dataset.otclClicks = String(clicks + 1);
+                toggle.click();
+                return; // na het openklappen volgt een nieuwe ronde
+            }
+
+            // Kop met de in-/uitklapknop pas verbergen als de sectie echt open is,
+            // zodat je bij een mislukte klik nog zelf kunt openklappen.
+            // De kop is de knop met de tekst "Log Work" ernaast; bevat die ook het veld, dan alleen de knop.
+            const header = toggle.parentElement.querySelector(SELECTORS.worklogTimeSpent) ? toggle : toggle.parentElement;
+            if (header.classList.contains('otcl-worklog-hidden') !== open) {
+                header.classList.toggle('otcl-worklog-hidden', open);
+            }
+            [SELECTORS.worklogTimeRemaining, SELECTORS.worklogDateStarted].forEach(selector => {
+                const field = section.querySelector(selector);
+                if (field && !field.classList.contains('otcl-worklog-hidden')) field.classList.add('otcl-worklog-hidden');
+            });
+        });
+    }
+
+    /** Het kind van `ancestor` waarbinnen `node` ligt (of null). */
+    function closestChildOf(ancestor, node) {
+        let current = node;
+        while (current && current.parentElement !== ancestor) current = current.parentElement;
+        return current;
+    }
+
+    // =====================================================================
     // CSS (alleen eigen klassen met prefix "otcl-")
     // =====================================================================
     function injectStyles() {
@@ -862,6 +925,9 @@
             .otcl-flagged:hover {
                 background-color: var(--ds-background-warning-hovered, #ffe2a8) !important;
             }
+
+            /* Transitievenster: onderdelen van "Log Work" verbergen (blijven in het formulier) */
+            .otcl-worklog .otcl-worklog-hidden { display: none !important; }
 
             .otcl-divider-host { position: relative; }
             .otcl-divider-host > :not(.otcl-divider-overlay):not(${SELECTORS.backlogClickLayer}) {
@@ -1052,6 +1118,11 @@
         } catch (e) {
             console.debug(LOG_PREFIX, 'Fout bij backlog-regels', e);
         }
+        try {
+            if (FEATURES.logWorkTimeSpentOnly) processLogWork();
+        } catch (e) {
+            console.debug(LOG_PREFIX, 'Fout bij Log Work in transitievenster', e);
+        }
     }
 
     let runTimer = null;
@@ -1109,6 +1180,7 @@
                 dividersOpPagina: document.querySelectorAll('.otcl-divider-overlay').length,
                 dueDateVeldenGevonden: document.querySelectorAll(SELECTORS.dueDate).length,
                 dueDateKaders: document.querySelectorAll(DUE_DATE_CLASSES.map(cls => '.' + cls).join(',') || 'none').length,
+                logWorkSectiesGevonden: document.querySelectorAll(SELECTORS.worklogSection).length,
                 ticketsInCache: Object.keys(cache).length,
                 inWachtrij: queue.size,
                 geopendTicket: lastSelectedIssue,

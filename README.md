@@ -1,7 +1,7 @@
 # Jira Cloud – OT label badges (Tampermonkey)
 
 Een Tampermonkey-script voor Jira Cloud van OnderwijsTransparant (`onderwijstransparant.atlassian.net`).
-Het script past alleen de weergave aan en wijzigt nooit tickets.
+Het script past alleen de weergave aan en wijzigt nooit zelf tickets.
 
 ## Installeren (eenmalig)
 
@@ -39,6 +39,7 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
 - **Geflagde tickets** worden in de backlog geel, net als op het bord. Jira zelf kleurt ze in de backlog roze.
 - **Due date met kader:** heeft een ticket een ingevulde due date én het label `overleg` (zonder datum erachter), dan krijgt het standaard due date-veld in de backlog een paars kader. Dat label zelf wordt niet als badge getoond. Zonder passend label blijft de normale opmaak. Meer label/kleur-combinaties zijn toe te voegen bij `DUE_DATE_RULES` bovenin het script.
 - De labels `small`, `medium`, `large`, `geen-punten`, `onduidelijk-punten` en `overleg` worden niet als badge getoond.
+- **Log Work bij statuswijziging:** heeft het venster bij een statuswijziging (bijv. *Respond to customer*, *Close Issue*, *Move to Test*) een sectie **Log Work**, dan staat die meteen open en zie je alleen het veld **Time Spent**. *Time Remaining*, *Date Started* en de uitlegtekst met link zijn verborgen; Jira vult die zelf met de standaardwaarden (resterende tijd automatisch, starttijd nu). Dit werkt overal waar het venster opent: ticketpagina, ticketpaneel, bord (ook bij slepen), lijst en zoekresultaten, en ook met een Nederlandse interface.
 
 Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders zie je labels dubbel.
 
@@ -48,6 +49,7 @@ Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders 
 2. Typ `otclLabels.status()` en druk op Enter.
    - Staat er bij *gevonden* een 0 terwijl je wel kaarten of regels ziet? Dan heeft Atlassian de pagina veranderd. Alle herkenningspunten (`SELECTORS`) staan bovenin het script bij elkaar en zijn daar aan te passen.
    - Staat er iets bij *laatsteFout*? Dan gaat het ophalen bij Jira mis.
+   - Klapt *Log Work* niet meer vanzelf open? Typ `otclLabels.status()` terwijl het statusvenster openstaat. Is *logWorkSectiesGevonden* 0, dan heeft Atlassian het venster veranderd (selectors `worklog…` in `SELECTORS`).
    - Bestaat `otclLabels` niet? Dan draait het script niet. Controleer in Tampermonkey of het aan staat.
 3. Labels verouderd? Typ `otclLabels.clearCache()`.
 
