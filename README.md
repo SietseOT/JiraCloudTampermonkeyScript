@@ -45,7 +45,7 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
   - Componenten worden alleen toegevoegd, nooit weggehaald. Haal je daarna zelf een component weg, dan blijft dat zo.
   - Werkt alleen bij wie het script heeft. Uitzetten kan via het tandwiel (zie hieronder).
 
-Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders zie je labels dubbel.
+Toont Jira op de bordkaarten zelf ook labels (veld *Labels* in **Card layout**), dan verbergt het script die en toont het alleen zijn eigen badges met de juiste opmaak.
 
 ## Werkt het niet?
 
@@ -60,6 +60,7 @@ Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders 
 ## Onderdelen aan- of uitzetten
 
 Rechtsonder in Jira staat een **tandwiel** (⚙). Klik erop om onderdelen aan of uit te zetten; bij elke optie staat wat die doet.
+Onder **Meer info: labels en opmaak** staat een legenda: welke labeltekst welke opmaak geeft.
 Je keuze geldt alleen voor jou, in deze browser, en blijft bewaard bij updates. Met **Standaard herstellen** zet je alles terug.
 Het venster is ook te openen vanuit de console met `otclLabels.settings()`.
 
