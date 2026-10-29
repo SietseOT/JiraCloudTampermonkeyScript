@@ -26,7 +26,7 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
   | Label | Weergave |
   |---|---|
   | `deadline…` (bijv. `deadline:2026-10-12`) | 📅 Deadline 12-10-2026 (blauw, vóór de titel) |
-  | `overleg…` (bijv. `overleg:2026-10-13`) | 💬 Overleg 13-10-2026 (paars, vóór de titel) |
+  | `overleg…` met datum (bijv. `overleg:2026-10-13`) | 💬 Overleg 13-10-2026 (paars, vóór de titel) |
   | `hotfix` | 🔥 Hotfix (rood) |
   | `tijdskritisch` | ⏰ Tijdskritisch (oranje) |
   | `urgent` | rood gevuld |
@@ -37,7 +37,8 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
 
 - **Divider:** een ticket met het label `divider` wordt in de backlog een scheidingslijn met de titel in het midden. Je kunt de regel nog steeds slepen en aanklikken.
 - **Geflagde tickets** worden in de backlog geel, net als op het bord. Jira zelf kleurt ze in de backlog roze.
-- De labels `small`, `medium`, `large`, `geen-punten` en `onduidelijk-punten` worden niet als badge getoond.
+- **Due date met kader:** heeft een ticket een ingevulde due date én het label `overleg` (zonder datum erachter), dan krijgt het standaard due date-veld in de backlog een paars kader. Dat label zelf wordt niet als badge getoond. Zonder passend label blijft de normale opmaak. Meer label/kleur-combinaties zijn toe te voegen bij `DUE_DATE_RULES` bovenin het script.
+- De labels `small`, `medium`, `large`, `geen-punten`, `onduidelijk-punten` en `overleg` worden niet als badge getoond.
 
 Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders zie je labels dubbel.
 
