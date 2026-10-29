@@ -1,7 +1,7 @@
 # Jira Cloud – OT label badges (Tampermonkey)
 
 Een Tampermonkey-script voor Jira Cloud van OnderwijsTransparant (`onderwijstransparant.atlassian.net`).
-Het script past alleen de weergave aan en wijzigt nooit tickets.
+Het script past alleen de weergave aan en wijzigt nooit zelf tickets.
 
 ## Installeren (eenmalig)
 
@@ -38,6 +38,7 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
 - **Divider:** een ticket met het label `divider` wordt in de backlog een scheidingslijn met de titel in het midden. Je kunt de regel nog steeds slepen en aanklikken.
 - **Geflagde tickets** worden in de backlog geel, net als op het bord. Jira zelf kleurt ze in de backlog roze.
 - De labels `small`, `medium`, `large`, `geen-punten` en `onduidelijk-punten` worden niet als badge getoond.
+- **Log Work bij statuswijziging:** heeft het venster bij een statuswijziging (bijv. *Respond to customer*, *Close Issue*, *Move to Test*) een sectie **Log Work**, dan staat die meteen open en zie je alleen het veld **Time Spent**. *Time Remaining*, *Date Started* en de uitlegtekst met link zijn verborgen; Jira vult die zelf met de standaardwaarden (resterende tijd automatisch, starttijd nu). Dit werkt overal waar het venster opent: ticketpagina, ticketpaneel, bord (ook bij slepen), lijst en zoekresultaten, en ook met een Nederlandse interface.
 
 Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders zie je labels dubbel.
 
@@ -47,6 +48,7 @@ Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders 
 2. Typ `otclLabels.status()` en druk op Enter.
    - Staat er bij *gevonden* een 0 terwijl je wel kaarten of regels ziet? Dan heeft Atlassian de pagina veranderd. Alle herkenningspunten (`SELECTORS`) staan bovenin het script bij elkaar en zijn daar aan te passen.
    - Staat er iets bij *laatsteFout*? Dan gaat het ophalen bij Jira mis.
+   - Klapt *Log Work* niet meer vanzelf open? Typ `otclLabels.status()` terwijl het statusvenster openstaat. Is *logWorkSectiesGevonden* 0, dan heeft Atlassian het venster veranderd (selectors `worklog…` in `SELECTORS`).
    - Bestaat `otclLabels` niet? Dan draait het script niet. Controleer in Tampermonkey of het aan staat.
 3. Labels verouderd? Typ `otclLabels.clearCache()`.
 
