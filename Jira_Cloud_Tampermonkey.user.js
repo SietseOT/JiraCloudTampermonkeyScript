@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.5.0
+// @version      1.6.0
 // @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
@@ -18,7 +18,7 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.5.0';
+    const SCRIPT_VERSION = '1.6.0';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
@@ -124,15 +124,20 @@
     // script op die plek stil niets.
     // =====================================================================
     const SELECTORS = {
-        // Bord (Active sprint) met Group: Story
-        swimlane: '[data-testid="platform-board-kit.ui.swimlane.swimlane-wrapper"]',
-        swimlaneSummary: '[data-testid="platform-board-kit.ui.swimlane.summary-section"]',
-        swimlaneKey: '[data-testid="platform-card.common.ui.key.key"]',
+        // Bord (Active sprint, nieuwe bordweergave vanaf okt 2026) met Group: Story/Sub-task.
+        // Een swimlane is een lijstitem met een kop (role="heading") en daaronder de kolommen.
+        swimlane: '[role="listitem"]:has(> [data-testid="board.content.swimlane.scroll-container"])',
+        swimlaneHeading: '[role="heading"]',
+        // In de kop: link met de ticketsleutel, direct gevolgd door de titel
+        swimlaneKey: ':scope > a[href*="/browse/"]',
 
-        // Kaart op het bord: de ticketsleutel staat in het id, bijv. id="card-OT-8"
-        boardCard: '[data-testid="platform-board-kit.ui.card.card"][id^="card-"]',
-        boardCardIdPrefix: 'card-',
-        boardCardFooter: '[data-testid="platform-card.ui.card.card-content.footer"]',
+        // Kaart op het bord. De sleutel staat in de link naar /browse/OT-8; de zichtbare
+        // sleutel (onderaan de kaart) is een tweede link met de sleutel als tekst.
+        boardCard: '[data-testid="board.content.cell.card"]',
+        boardCardLink: 'a[href*="/browse/"]',
+        boardCardDraggable: '[draggable="true"]',
+        // Jira's eigen labels op de kaart (zonder onze opmaak); verborgen zodra onze badges er staan
+        boardCardNativeLabels: ':scope > [role="group"][aria-label="Labels"]',
 
         // Backlog: de ticketsleutel staat aan het eind van deze data-testid
         backlogRow: '[data-testid^="software-backlog.card-list.card.content-container."]',
@@ -141,6 +146,9 @@
         backlogSummary: '[data-testid="software-backlog.card-list.card.card-contents.summary"]',
         backlogSummaryText: '[data-testid="software-backlog.card-list.card.card-contents.summary-field.summary-field-static.content"]',
         backlogClickLayer: '[data-testid="software-backlog.card-list.card.card-contents.interaction-layer.accessible-card"]',
+        // Vlag-icoon in de regel: rood vlaggetje als geflagd, anders de knop "Add Flag"
+        backlogFlagged: '[data-testid="software-backlog.card-list.card.card-contents.flagged-button"]',
+        backlogAddFlag: '[data-testid="software-backlog.card-list.card.card-contents.add-flag-button"]',
 
         // Het zichtbare vakje van het standaard due date-veld in een backlog-regel
         dueDate: '[data-testid="coloured-due-date.ui.colored-due-date-container"]',
@@ -611,8 +619,10 @@
     /** Haalt alles weg wat het script aan de pagina heeft toegevoegd (behalve het tandwiel). */
     function clearPage() {
         document.querySelectorAll('.otcl-badges, .otcl-divider-overlay').forEach(el => el.remove());
-        ['otcl-card-on-hold', 'otcl-flagged', 'otcl-divider-host', 'otcl-worklog', 'otcl-worklog-hidden', ...DUE_DATE_CLASSES].forEach(cls => {
-            document.querySelectorAll(`.${cls}`).forEach(el => el.classList.remove(cls));
+        ['otcl-card-on-hold', 'otcl-native-hidden', 'otcl-flagged', 'otcl-divider-host', 'otcl-worklog', 'otcl-worklog-hidden', ...DUE_DATE_CLASSES].forEach(cls => {
+            document.querySelectorAll(`.${cls}`).forEach(el => {
+                if (!el.closest('.otcl-settings-panel')) el.classList.remove(cls); // legenda laten staan
+            });
         });
     }
 
@@ -621,13 +631,13 @@
     // =====================================================================
     function processSwimlaneHeaders() {
         document.querySelectorAll(SELECTORS.swimlane).forEach(lane => {
-            const summary = lane.querySelector(SELECTORS.swimlaneSummary);
-            const anchor = summary && summary.parentElement;
-            const heading = anchor && anchor.parentElement;
-            if (!heading) return; // bijv. de swimlane "Everything else"
+            const heading = lane.querySelector(SELECTORS.swimlaneHeading);
+            if (!heading) return;
             const keyElement = heading.querySelector(SELECTORS.swimlaneKey);
             const key = keyElement ? keyElement.textContent.trim() : '';
-            if (!KEY_PATTERN.test(key)) {
+            // Badges direct achter de titel; geen sleutel = bijv. de swimlane "No Sub-task"
+            const anchor = keyElement && keyElement.nextElementSibling;
+            if (!KEY_PATTERN.test(key) || !anchor) {
                 removeBadges(heading);
                 return;
             }
@@ -635,17 +645,37 @@
         });
     }
 
+    /** Ticketsleutel van een bordkaart (uit de link naar /browse/KEY), of ''. */
+    function boardCardKey(card) {
+        const link = card.querySelector(SELECTORS.boardCardLink);
+        const match = link && (link.getAttribute('href') || '').match(BROWSE_PATH_PATTERN);
+        return match ? match[1] : '';
+    }
+
     function processBoardCards() {
         document.querySelectorAll(SELECTORS.boardCard).forEach(card => {
-            const key = card.id.slice(SELECTORS.boardCardIdPrefix.length);
+            const key = boardCardKey(card);
             if (!KEY_PATTERN.test(key)) return;
-            const footer = card.querySelector(SELECTORS.boardCardFooter);
-            const column = footer && footer.parentElement;
-            if (!column) return;
+            // De voettekst (sleutel/avatar) is het blok met de zichtbare sleutel; het vak
+            // eromheen bevat ook de titel en eventueel Jira's eigen labels.
+            const keyLink = Array.from(card.querySelectorAll(SELECTORS.boardCardLink))
+                .find(link => link.textContent.trim() === key);
+            const draggable = card.querySelector(SELECTORS.boardCardDraggable);
+            const column = keyLink && draggable && closestChildOf(draggable, keyLink);
+            const footer = column && closestChildOf(column, keyLink);
+            if (!footer || footer === keyLink) return;
 
             const labels = getLabels(key);
             // Badges als eigen regel tussen de titel en de voettekst (sleutel/avatar)
             upsertBadges(column, { before: footer }, key, labels, 'card');
+
+            // Jira toont labels nu ook zelf, maar zonder opmaak (en ook verborgen labels zoals
+            // "small"). Zodra wij de labels kennen tonen alleen onze badges ze.
+            const nativeLabels = column.querySelector(SELECTORS.boardCardNativeLabels);
+            const hideNative = Array.isArray(labels);
+            if (nativeLabels && nativeLabels.classList.contains('otcl-native-hidden') !== hideNative) {
+                nativeLabels.classList.toggle('otcl-native-hidden', hideNative);
+            }
 
             const onHold = FEATURES.onHoldDimsCard && Array.isArray(labels)
                 && labels.some(label => label.toLowerCase() === 'on-hold');
@@ -673,7 +703,7 @@
             applyDivider(container, key, isDivider);
 
             // Vlag: Jira kleurt de regel in de backlog roze; wij maken het geel zoals op het bord
-            const flagged = FEATURES.flaggedYellow && getFlagged(key) === true && !isDivider;
+            const flagged = FEATURES.flaggedYellow && isBacklogRowFlagged(row, key) && !isDivider;
             if (container.classList.contains('otcl-flagged') !== flagged) {
                 container.classList.toggle('otcl-flagged', flagged);
             }
@@ -687,6 +717,16 @@
                 removeBadges(summaryBox);
             }
         });
+    }
+
+    /**
+     * Is de regel geflagd? Eerst het vlag-icoon dat Jira zelf in de regel toont: dat
+     * klopt meteen na (ont)flaggen. Alleen als dat er niet is de opgehaalde vlag.
+     */
+    function isBacklogRowFlagged(row, key) {
+        if (row.querySelector(SELECTORS.backlogFlagged)) return true;
+        if (row.querySelector(SELECTORS.backlogAddFlag)) return false;
+        return getFlagged(key) === true;
     }
 
     /** CSS-klasse voor het due date-veld van een ticket, of null (geen due date of geen passende regel). */
@@ -746,6 +786,62 @@
         saveSettings();
         clearPage();
         scheduleRun();
+    }
+
+    /**
+     * Uitklapbare legenda: welk label (tekst in Jira) welke opmaak geeft.
+     * Opgebouwd uit dezelfde lijsten als de badges zelf, dus altijd actueel.
+     */
+    function createLegend() {
+        const details = document.createElement('details');
+        details.className = 'otcl-legend';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Meer info: labels en opmaak';
+        details.appendChild(summary);
+
+        const table = document.createElement('div');
+        table.className = 'otcl-legend-table';
+        function addRow(labelText, preview, note) {
+            const label = document.createElement('code');
+            label.className = 'otcl-legend-label';
+            label.textContent = labelText;
+            const result = document.createElement('div');
+            result.className = 'otcl-legend-result';
+            if (preview) result.appendChild(preview);
+            if (note) {
+                const text = document.createElement('span');
+                text.className = 'otcl-legend-note';
+                text.textContent = note;
+                result.appendChild(text);
+            }
+            table.append(label, result);
+        }
+
+        const exampleDate = '2026-10-12';
+        DATE_PREFIX_LABELS.forEach(def => {
+            addRow(`${def.prefix}:${exampleDate}`, createBadge(`${def.prefix}:${exampleDate}`, false).badge,
+                'Datum mag ook als 12-10-2026. In de backlog vóór de titel.');
+        });
+        Object.keys(SPECIAL_LABELS).forEach(label => {
+            addRow(label, createBadge(label, false).badge, label === 'on-hold' ? 'Kaart op het bord wordt iets doorzichtig.' : '');
+        });
+        addRow('elk ander label', createBadge('voorbeeld', false).badge, 'Grijze tag met de labeltekst.');
+        addRow(DIVIDER_LABEL, null, 'Ticket wordt in de backlog een scheidingslijn met de titel in het midden.');
+        DUE_DATE_RULES.forEach(rule => {
+            const due = document.createElement('span');
+            due.className = `otcl-legend-due ${rule.cls}`;
+            due.textContent = '📅 30 okt';
+            addRow(rule.label, due, 'Alleen met ingevulde due date: kader om de due date in de backlog. Zelf geen badge.');
+        });
+        const hidden = [...HIDDEN_LABELS].filter(label => label !== DIVIDER_LABEL
+            && !DUE_DATE_RULES.some(rule => rule.label.toLowerCase() === label));
+        addRow(hidden.join(', '), null, 'Worden niet getoond.');
+
+        const tip = document.createElement('p');
+        tip.className = 'otcl-legend-tip';
+        tip.textContent = 'Hoofdletters maken niet uit. In swimlane-koppen staat bij deadline/overleg alleen de datum.';
+        details.append(table, tip);
+        return details;
     }
 
     function createSettingsUi() {
@@ -822,7 +918,7 @@
         });
         footer.appendChild(reset);
 
-        panel.append(header, intro, list, footer);
+        panel.append(header, intro, list, createLegend(), footer);
 
         function setOpen(open) {
             panel.hidden = !open;
@@ -924,12 +1020,16 @@
                 margin-left: 8px;
                 max-width: 450px;
             }
+            /* Zelfde inspringing en afstand als Jira's eigen regels op de kaart */
             .otcl-badges--card {
                 display: flex;
                 flex-wrap: wrap;
-                margin: 4px 0 6px;
+                margin: 0 0 8px;
+                padding: 0 12px;
             }
-            .otcl-card-on-hold { opacity: 0.7; }
+            /* Jira's eigen CSS zet opacity op de kaart zelf; daarom het blok erbinnen */
+            .otcl-card-on-hold ${SELECTORS.boardCardDraggable} { opacity: 0.7; }
+            .otcl-native-hidden { display: none !important; }
             .otcl-badges--row-lead,
             .otcl-badges--row-tail {
                 overflow: hidden;
@@ -1095,6 +1195,7 @@
                 width: 360px;
                 max-width: calc(100vw - 32px);
                 max-height: calc(100vh - 80px);
+                overflow-x: hidden;
                 overflow-y: auto;
                 padding: 12px 16px;
                 border-radius: 8px;
@@ -1177,6 +1278,66 @@
                 cursor: pointer;
             }
             .otcl-settings-reset:hover { background: var(--ds-background-neutral-hovered, #091e4224); }
+
+            /* Legenda in het instellingenvenster */
+            .otcl-legend {
+                margin-top: 8px;
+                padding-top: 8px;
+                border-top: 1px solid var(--ds-border, #091e4224);
+            }
+            .otcl-legend summary {
+                padding: 4px 6px;
+                border-radius: 4px;
+                color: var(--ds-link, #0c66e4);
+                font-size: 13px;
+                font-weight: 500;
+                cursor: pointer;
+            }
+            .otcl-legend summary:hover { background: var(--ds-background-neutral-subtle-hovered, #091e420f); }
+            .otcl-legend-table {
+                display: grid;
+                grid-template-columns: 136px minmax(0, 1fr);
+                gap: 8px 12px;
+                align-items: start;
+                margin: 8px 6px 0;
+            }
+            .otcl-legend-label {
+                justify-self: start;
+                max-width: 100%;
+                box-sizing: border-box;
+                padding: 1px 4px;
+                border-radius: 3px;
+                background: var(--ds-background-neutral, #091e420f);
+                color: var(--ds-text, #172b4d);
+                font-size: 12px;
+                line-height: 18px;
+                overflow-wrap: anywhere;
+            }
+            .otcl-legend-result {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 2px;
+            }
+            .otcl-legend-note {
+                color: var(--ds-text-subtle, #44546f);
+                font-size: 12px;
+                line-height: 16px;
+            }
+            .otcl-legend-due {
+                display: inline-block;
+                padding: 0 6px;
+                border: 1px solid var(--ds-border, #091e4224);
+                border-radius: 4px;
+                font-size: 12px;
+                line-height: 18px;
+            }
+            .otcl-legend-tip {
+                margin: 8px 6px 0;
+                color: var(--ds-text-subtlest, #626f86);
+                font-size: 12px;
+                line-height: 16px;
+            }
         `;
         document.head.appendChild(style);
     }
