@@ -69,6 +69,21 @@
             key: 'flaggedYellow',
             title: 'Geflagde tickets geel in de backlog',
             help: 'Jira kleurt geflagde tickets in de backlog roze. Met deze optie worden ze geel, net als op het bord.'
+        },
+        {
+            key: 'dueDateColors',
+            title: 'Due date met kader in de backlog',
+            help: 'Heeft een ticket een due date én het label "overleg" (zonder datum erachter), dan krijgt het due date-veld in de backlog een paars kader.'
+        },
+        {
+            key: 'logWorkTimeSpentOnly',
+            title: 'Log Work alleen Time Spent',
+            help: 'In het venster bij een statuswijziging staat de sectie Log Work meteen open met alleen het veld Time Spent. Time Remaining en Date Started vult Jira zelf.'
+        },
+        {
+            key: 'inheritComponents',
+            title: 'Subtaken erven componenten',
+            help: 'Maak je in een geopend ticket een subtaak aan, dan krijgt die dezelfde componenten als de parent (bijv. OT Software), zodat hij in dezelfde swimlane staat. Let op: dit past het ticket in Jira aan.'
         }
     ];
 
@@ -596,7 +611,7 @@
     /** Haalt alles weg wat het script aan de pagina heeft toegevoegd (behalve het tandwiel). */
     function clearPage() {
         document.querySelectorAll('.otcl-badges, .otcl-divider-overlay').forEach(el => el.remove());
-        ['otcl-card-on-hold', 'otcl-flagged', 'otcl-divider-host'].forEach(cls => {
+        ['otcl-card-on-hold', 'otcl-flagged', 'otcl-divider-host', 'otcl-worklog', 'otcl-worklog-hidden', ...DUE_DATE_CLASSES].forEach(cls => {
             document.querySelectorAll(`.${cls}`).forEach(el => el.classList.remove(cls));
         });
     }
@@ -1187,7 +1202,9 @@
             console.debug(LOG_PREFIX, 'Fout bij bordkaarten', e);
         }
         try {
-            if (FEATURES.backlogRows || FEATURES.backlogDividers || FEATURES.flaggedYellow) processBacklogRows();
+            if (FEATURES.backlogRows || FEATURES.backlogDividers || FEATURES.flaggedYellow || FEATURES.dueDateColors) {
+                processBacklogRows();
+            }
         } catch (e) {
             console.debug(LOG_PREFIX, 'Fout bij backlog-regels', e);
         }
