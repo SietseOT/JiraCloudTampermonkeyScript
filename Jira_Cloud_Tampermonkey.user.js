@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.4.1
+// @version      1.5.0
 // @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Alleen lezen.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
@@ -18,7 +18,7 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.4.1';
+    const SCRIPT_VERSION = '1.5.0';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
@@ -30,7 +30,8 @@
         onHoldDimsCard: true,    // kaart met label "on-hold" iets doorzichtig maken (zoals het oude script)
         backlogRows: true,       // labels in de regel van een ticket in de backlog
         backlogDividers: true,   // ticket met label "divider" als scheidingslijn in de backlog
-        flaggedYellow: true      // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
+        flaggedYellow: true,     // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
+        dueDateColors: true      // kader om het due date-veld in de backlog op basis van labels (zie DUE_DATE_RULES)
     };
 
     // =====================================================================
@@ -56,7 +57,10 @@
         backlogCardContainer: '[data-testid="software-backlog.card-list.card.card-contents.card-container"]',
         backlogSummary: '[data-testid="software-backlog.card-list.card.card-contents.summary"]',
         backlogSummaryText: '[data-testid="software-backlog.card-list.card.card-contents.summary-field.summary-field-static.content"]',
-        backlogClickLayer: '[data-testid="software-backlog.card-list.card.card-contents.interaction-layer.accessible-card"]'
+        backlogClickLayer: '[data-testid="software-backlog.card-list.card.card-contents.interaction-layer.accessible-card"]',
+
+        // Het zichtbare vakje van het standaard due date-veld in een backlog-regel
+        dueDate: '[data-testid="coloured-due-date.ui.colored-due-date-container"]'
     };
 
     const API = {
@@ -69,7 +73,7 @@
     // Jira-veld "Flagged" (vlag aan = gevuld). Het ID is per Jira-omgeving vast;
     // opzoeken via /rest/api/3/field als het ooit verandert.
     const FLAGGED_FIELD = 'customfield_10021';
-    const FETCH_FIELDS = `labels,${FLAGGED_FIELD}`;
+    const FETCH_FIELDS = `labels,duedate,${FLAGGED_FIELD}`;
 
     // Welk ticket staat open? Jira zet dit in de adresbalk (?selectedIssue=OT-9 of /browse/OT-9)
     const SELECTED_ISSUE_PARAM = 'selectedIssue';
@@ -78,7 +82,8 @@
     // =====================================================================
     // LABELWEERGAVE
     // =====================================================================
-    // Labels met een datum erachter, bijv. "deadline:2026-10-12" of "overleg-15-03-2026"
+    // Labels met een datum erachter, bijv. "deadline:2026-10-12" of "overleg-15-03-2026".
+    // Alleen het voorvoegsel zonder iets erachter (bijv. "Overleg") is géén datumlabel.
     const DATE_PREFIX_LABELS = [
         { prefix: 'deadline', icon: '📅', title: 'Deadline', cls: 'otcl-badge--deadline' },
         { prefix: 'overleg', icon: '💬', title: 'Overleg', cls: 'otcl-badge--overleg' }
@@ -97,8 +102,18 @@
     };
 
     // Labels die niet als badge getoond worden (net als in het oude script)
-    const HIDDEN_LABELS = new Set(['divider', 'small', 'medium', 'large', 'geen-punten', 'onduidelijk-punten']);
+    // "overleg" zonder datum geeft alleen het kader om de due date (zie DUE_DATE_RULES).
+    const HIDDEN_LABELS = new Set(['divider', 'small', 'medium', 'large', 'geen-punten', 'onduidelijk-punten', 'overleg']);
     const DIVIDER_LABEL = 'divider';
+
+    // Kader om het standaard due date-veld (alleen als er een due date is ingevuld).
+    // Label is hoofdletterongevoelig; de eerste regel die past wint. Een nieuwe
+    // combinatie toevoegen: een regel hier en (bij een nieuwe kleur) een CSS-klasse
+    // "otcl-due--<kleur>" in injectStyles().
+    const DUE_DATE_RULES = [
+        { label: 'overleg', cls: 'otcl-due--purple' }
+    ];
+    const DUE_DATE_CLASSES = [...new Set(DUE_DATE_RULES.map(rule => rule.cls))];
 
     // =====================================================================
     // CACHE EN OPHALEN
@@ -135,6 +150,7 @@
                     || typeof entry.flagged !== 'boolean'
                     || typeof entry.lastFetched !== 'number' || typeof entry.lastSeen !== 'number';
                 if (malformed || now - entry.lastSeen > FORGET_AFTER) delete data[key];
+                else if (entry.dueDate === undefined) entry.lastFetched = 0; // cache van vóór v1.5.0: due date nog ophalen
             }
             return data;
         } catch (e) {
@@ -197,8 +213,8 @@
             const now = Date.now();
             keys.forEach(key => {
                 // Niet gevonden (verwijderd, verplaatst of geen rechten): onthouden als "geen labels"
-                const data = found[key] || { labels: [], flagged: false };
-                cache[key] = { labels: data.labels, flagged: data.flagged, lastFetched: now, lastSeen: now };
+                const data = found[key] || { labels: [], flagged: false, dueDate: null };
+                cache[key] = { labels: data.labels, flagged: data.flagged, dueDate: data.dueDate, lastFetched: now, lastSeen: now };
             });
             lastError = null;
             scheduleSave();
@@ -254,12 +270,12 @@
             if (response.status === 404) return; // verwijderd of geen rechten
             if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
             const data = await response.json();
-            const { labels, flagged } = readIssueFields(data.fields);
+            const { labels, flagged, dueDate } = readIssueFields(data.fields);
             const now = Date.now();
             const previous = cache[key];
-            cache[key] = { labels, flagged, lastFetched: now, lastSeen: now };
+            cache[key] = { labels, flagged, dueDate, lastFetched: now, lastSeen: now };
             scheduleSave();
-            const changed = !previous || previous.flagged !== flagged
+            const changed = !previous || previous.flagged !== flagged || previous.dueDate !== dueDate
                 || previous.labels.join('\u0001') !== labels.join('\u0001');
             if (changed) scheduleRun();
         } catch (err) {
@@ -278,12 +294,13 @@
         scheduleRun();
     }
 
-    /** Haalt labels en vlag uit de velden die Jira teruggeeft. */
+    /** Haalt labels, vlag en due date uit de velden die Jira teruggeeft. */
     function readIssueFields(fields) {
         const labels = fields && Array.isArray(fields.labels) ? fields.labels : [];
         const flag = fields && fields[FLAGGED_FIELD];
         const flagged = Array.isArray(flag) ? flag.length > 0 : Boolean(flag);
-        return { labels, flagged };
+        const dueDate = (fields && fields.duedate) || null;
+        return { labels, flagged, dueDate };
     }
 
     /** Vlag van een ticket uit de cache (null als nog onbekend). */
@@ -331,15 +348,20 @@
         return iso ? `${iso[3]}-${iso[2]}-${iso[1]}` : text;
     }
 
+    /** Het datumlabel-type van een label, of undefined. Er moet iets achter het voorvoegsel staan. */
+    function findDateLabelDef(label) {
+        const lower = label.toLowerCase();
+        return DATE_PREFIX_LABELS.find(def => lower.length > def.prefix.length && lower.startsWith(def.prefix));
+    }
+
     /** Bepaalt icoon, tekst, opmaak en volgorde van één label. compact = kortere tekst voor koppen. */
     function describeLabel(label, compact) {
         const lower = label.toLowerCase();
-        for (const def of DATE_PREFIX_LABELS) {
-            if (lower.startsWith(def.prefix)) {
-                const rest = formatDateText(label.slice(def.prefix.length));
-                const text = compact ? (rest || def.title) : `${def.title}${rest ? ' ' + rest : ''}`;
-                return { icon: def.icon, text, cls: def.cls, order: 0 };
-            }
+        const def = findDateLabelDef(label);
+        if (def) {
+            const rest = formatDateText(label.slice(def.prefix.length));
+            const text = compact ? (rest || def.title) : `${def.title}${rest ? ' ' + rest : ''}`;
+            return { icon: def.icon, text, cls: def.cls, order: 0 };
         }
         const special = SPECIAL_LABELS[lower];
         if (special) {
@@ -368,8 +390,7 @@
     }
 
     function isDateLabel(label) {
-        const lower = label.toLowerCase();
-        return DATE_PREFIX_LABELS.some(def => lower.startsWith(def.prefix));
+        return Boolean(findDateLabelDef(label));
     }
 
     /** Welke labels in welk vak komen. row-lead = vóór de titel, row-tail = achter de titel. */
@@ -484,12 +505,37 @@
                 container.classList.toggle('otcl-flagged', flagged);
             }
 
+            applyDueDateStyle(row, key);
+
             if (FEATURES.backlogRows && !isDivider) {
                 upsertBadges(summaryBox, { before: summary }, key, labels, 'row-lead');
                 upsertBadges(summaryBox, { after: summary }, key, labels, 'row-tail');
             } else {
                 removeBadges(summaryBox);
             }
+        });
+    }
+
+    /** CSS-klasse voor het due date-veld van een ticket, of null (geen due date of geen passende regel). */
+    function dueDateClass(key) {
+        const entry = cache[key];
+        if (!FEATURES.dueDateColors || !entry || !entry.dueDate) return null;
+        const labels = entry.labels.map(label => label.toLowerCase());
+        const rule = DUE_DATE_RULES.find(r => labels.includes(r.label.toLowerCase()));
+        return rule ? rule.cls : null;
+    }
+
+    /**
+     * Zet het kader om het due date-veld binnen `root`. Elementen die Jira hergebruikt
+     * voor een ander ticket worden ook weer opgeschoond.
+     */
+    function applyDueDateStyle(root, key) {
+        const wanted = dueDateClass(key);
+        root.querySelectorAll(SELECTORS.dueDate).forEach(field => {
+            DUE_DATE_CLASSES.forEach(cls => {
+                const on = cls === wanted;
+                if (field.classList.contains(cls) !== on) field.classList.toggle(cls, on);
+            });
         });
     }
 
@@ -613,6 +659,14 @@
                 background: var(--ds-background-danger-bold, #c9372c);
                 color: var(--ds-text-inverse, #ffffff);
                 font-weight: 600;
+            }
+
+            /* Kader om het standaard due date-veld (zie DUE_DATE_RULES). Jira's eigen
+               rand van 1px wordt gekleurd en met een schaduw naar binnen 2px dik
+               gemaakt: zo verschuift er niets. */
+            .otcl-due--purple {
+                border-color: var(--ds-border-accent-purple, #8f7ee7) !important;
+                box-shadow: inset 0 0 0 1px var(--ds-border-accent-purple, #8f7ee7);
             }
 
             /* Geflagd: zelfde geel als Jira op het bord gebruikt (token background.warning) */
@@ -742,6 +796,8 @@
                 backlogRegelsGevonden: document.querySelectorAll(SELECTORS.backlogRow).length,
                 badgesOpPagina: document.querySelectorAll('.otcl-badges').length,
                 dividersOpPagina: document.querySelectorAll('.otcl-divider-overlay').length,
+                dueDateVeldenGevonden: document.querySelectorAll(SELECTORS.dueDate).length,
+                dueDateKaders: document.querySelectorAll(DUE_DATE_CLASSES.map(cls => '.' + cls).join(',') || 'none').length,
                 ticketsInCache: Object.keys(cache).length,
                 inWachtrij: queue.size,
                 geopendTicket: lastSelectedIssue,
