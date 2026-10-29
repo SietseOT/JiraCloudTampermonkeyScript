@@ -1,7 +1,7 @@
 # Jira Cloud – OT label badges (Tampermonkey)
 
 Een Tampermonkey-script voor Jira Cloud van OnderwijsTransparant (`onderwijstransparant.atlassian.net`).
-Het script past alleen de weergave aan en wijzigt nooit tickets.
+Het script past vooral de weergave aan. De enige wijziging die het aan tickets doet: een nieuwe subtaak krijgt de componenten van de parent (zie hieronder).
 
 ## Installeren (eenmalig)
 
@@ -38,6 +38,10 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
 - **Divider:** een ticket met het label `divider` wordt in de backlog een scheidingslijn met de titel in het midden. Je kunt de regel nog steeds slepen en aanklikken.
 - **Geflagde tickets** worden in de backlog geel, net als op het bord. Jira zelf kleurt ze in de backlog roze.
 - De labels `small`, `medium`, `large`, `geen-punten` en `onduidelijk-punten` worden niet als badge getoond.
+- **Componenten overerven:** maak je in een geopend ticket (zijpaneel of volledig scherm) een subtaak aan, dan krijgt die subtaak automatisch dezelfde componenten als de parent (bijv. `OT Software`). Zo staat hij in dezelfde swimlane.
+  - Alleen voor subtaken die erbij komen terwijl de parent open staat en die hooguit 10 minuten oud zijn. Bestaande subtaken worden nooit aangepast.
+  - Componenten worden alleen toegevoegd, nooit weggehaald. Haal je daarna zelf een component weg, dan blijft dat zo.
+  - Werkt alleen bij wie het script heeft. Uitzetten: `inheritComponents: false` bij `FEATURES`.
 
 Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders zie je labels dubbel.
 
