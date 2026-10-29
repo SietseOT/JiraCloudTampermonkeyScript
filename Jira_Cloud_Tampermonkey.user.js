@@ -2,7 +2,7 @@
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
 // @version      1.5.0
-// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Wijzigt nooit zelf tickets.
+// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
 // @grant        none
@@ -34,7 +34,8 @@
         backlogDividers: true,   // ticket met label "divider" als scheidingslijn in de backlog
         flaggedYellow: true,     // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
         dueDateColors: true,     // kader om het due date-veld in de backlog op basis van labels (zie DUE_DATE_RULES)
-        logWorkTimeSpentOnly: true // transitievenster: "Log Work" direct open, alleen Time Spent zichtbaar
+        logWorkTimeSpentOnly: true, // transitievenster: "Log Work" direct open, alleen Time Spent zichtbaar
+        inheritComponents: true  // nieuwe subtaak krijgt de componenten van de parent (wijzigt het ticket!)
     };
 
     // Teksten in het instellingenvenster (volgorde = volgorde in het venster)
@@ -340,13 +341,15 @@
         if (singleInFlight.has(key) || Date.now() < pausedUntil) return;
         singleInFlight.add(key);
         try {
-            const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=${FETCH_FIELDS}`, {
+            const fields = FEATURES.inheritComponents ? `${FETCH_FIELDS},${INHERIT_FIELDS}` : FETCH_FIELDS;
+            const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=${fields}`, {
                 credentials: 'same-origin',
                 headers: { Accept: 'application/json' }
             });
             if (response.status === 404) return; // verwijderd of geen rechten
             if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
             const data = await response.json();
+            if (FEATURES.inheritComponents) checkNewSubtasks(key, data.fields);
             const { labels, flagged, dueDate } = readIssueFields(data.fields);
             const now = Date.now();
             const previous = cache[key];
@@ -359,6 +362,76 @@
             console.debug(LOG_PREFIX, `Direct verversen van ${key} mislukt`, err);
         } finally {
             singleInFlight.delete(key);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // COMPONENTEN OVERERVEN
+    // Maak je in een geopend ticket een subtaak aan, dan krijgt die subtaak
+    // dezelfde componenten als de parent (bijv. "OT Software"), zodat hij in
+    // dezelfde swimlane terechtkomt. Alleen voor subtaken die erbij komen
+    // terwijl de parent open staat; bestaande subtaken blijven ongemoeid.
+    // ---------------------------------------------------------------------
+    const INHERIT_FIELDS = 'components,subtasks';
+    const NEW_SUBTASK_MAX_AGE = 10 * 60 * 1000;   // subtaak ouder dan 10 minuten: niet aanpassen
+    const knownSubtasks = new Map();              // parent -> subtaken die er al waren bij openen
+    const handledSubtasks = new Set();            // subtaken die we al behandeld hebben (nooit opnieuw)
+    let inheritedCount = 0;
+
+    function checkNewSubtasks(parentKey, fields) {
+        const subtaskKeys = (fields && Array.isArray(fields.subtasks) ? fields.subtasks : [])
+            .map(subtask => subtask && subtask.key)
+            .filter(Boolean);
+        const known = knownSubtasks.get(parentKey);
+        if (!known) {
+            // Eerste keer dat we deze parent zien: dit zijn de bestaande subtaken
+            knownSubtasks.set(parentKey, new Set(subtaskKeys));
+            return;
+        }
+        const components = fields && Array.isArray(fields.components) ? fields.components : [];
+        subtaskKeys.forEach(key => {
+            if (known.has(key)) return;
+            known.add(key);
+            if (!components.length || handledSubtasks.has(key)) return;
+            handledSubtasks.add(key);
+            inheritComponents(key, parentKey, components);
+        });
+    }
+
+    /** Voegt de ontbrekende componenten van de parent toe aan een net aangemaakte subtaak. */
+    async function inheritComponents(key, parentKey, components) {
+        try {
+            const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=components,created,parent`, {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' }
+            });
+            if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
+            const { fields } = await response.json();
+            if (!fields || !fields.parent || fields.parent.key !== parentKey) return;
+            // Jira geeft "2026-10-29T14:41:00.000+0100"; de tijdzone krijgt een dubbele punt zodat elke browser het leest
+            const created = Date.parse(String(fields.created).replace(/([+-]\d{2})(\d{2})$/, '$1:$2'));
+            if (!Number.isFinite(created) || Date.now() - created > NEW_SUBTASK_MAX_AGE) return;
+
+            const present = new Set((fields.components || []).map(component => component.id));
+            const missing = components.filter(component => !present.has(component.id));
+            if (!missing.length) return;
+
+            const update = await fetch(`${API.issue}${encodeURIComponent(key)}`, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Atlassian-Token': 'no-check'
+                },
+                // "add" laat componenten die de subtaak al heeft staan
+                body: JSON.stringify({ update: { components: missing.map(component => ({ add: { id: component.id } })) } })
+            });
+            if (!update.ok) throw new Error(`Jira API gaf status ${update.status}: ${await update.text()}`);
+            inheritedCount++;
+            console.info(LOG_PREFIX, `${key}: componenten van ${parentKey} overgenomen (${missing.map(component => component.name).join(', ')})`);
+        } catch (err) {
+            console.warn(LOG_PREFIX, `Componenten overnemen voor ${key} mislukt`, err);
         }
     }
 
@@ -1184,6 +1257,7 @@
                 ticketsInCache: Object.keys(cache).length,
                 inWachtrij: queue.size,
                 geopendTicket: lastSelectedIssue,
+                componentenOvergenomen: inheritedCount,
                 laatsteFout: lastError ? String(lastError.message || lastError) : null,
                 instellingen: JSON.stringify(FEATURES)
             };

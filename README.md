@@ -1,7 +1,7 @@
 # Jira Cloud – OT label badges (Tampermonkey)
 
 Een Tampermonkey-script voor Jira Cloud van OnderwijsTransparant (`onderwijstransparant.atlassian.net`).
-Het script past alleen de weergave aan en wijzigt nooit zelf tickets.
+Het script past vooral de weergave aan. De enige wijziging die het aan tickets doet: een nieuwe subtaak krijgt de componenten van de parent (zie hieronder).
 
 ## Installeren (eenmalig)
 
@@ -40,6 +40,10 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
 - **Due date met kader:** heeft een ticket een ingevulde due date én het label `overleg` (zonder datum erachter), dan krijgt het standaard due date-veld in de backlog een paars kader. Dat label zelf wordt niet als badge getoond. Zonder passend label blijft de normale opmaak. Meer label/kleur-combinaties zijn toe te voegen bij `DUE_DATE_RULES` bovenin het script.
 - De labels `small`, `medium`, `large`, `geen-punten`, `onduidelijk-punten` en `overleg` worden niet als badge getoond.
 - **Log Work bij statuswijziging:** heeft het venster bij een statuswijziging (bijv. *Respond to customer*, *Close Issue*, *Move to Test*) een sectie **Log Work**, dan staat die meteen open en zie je alleen het veld **Time Spent**. *Time Remaining*, *Date Started* en de uitlegtekst met link zijn verborgen; Jira vult die zelf met de standaardwaarden (resterende tijd automatisch, starttijd nu). Dit werkt overal waar het venster opent: ticketpagina, ticketpaneel, bord (ook bij slepen), lijst en zoekresultaten, en ook met een Nederlandse interface.
+- **Componenten overerven:** maak je in een geopend ticket (zijpaneel of volledig scherm) een subtaak aan, dan krijgt die subtaak automatisch dezelfde componenten als de parent (bijv. `OT Software`). Zo staat hij in dezelfde swimlane.
+  - Alleen voor subtaken die erbij komen terwijl de parent open staat en die hooguit 10 minuten oud zijn. Bestaande subtaken worden nooit aangepast.
+  - Componenten worden alleen toegevoegd, nooit weggehaald. Haal je daarna zelf een component weg, dan blijft dat zo.
+  - Werkt alleen bij wie het script heeft. Uitzetten kan via het tandwiel (zie hieronder).
 
 Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders zie je labels dubbel.
 
