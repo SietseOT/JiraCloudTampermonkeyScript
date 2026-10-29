@@ -50,7 +50,13 @@ Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders 
    - Bestaat `otclLabels` niet? Dan draait het script niet. Controleer in Tampermonkey of het aan staat.
 3. Labels verouderd? Typ `otclLabels.clearCache()`.
 
-Onderdelen zijn uit te zetten bovenin het script bij `FEATURES`.
+## Onderdelen aan- of uitzetten
+
+Rechtsonder in Jira staat een **tandwiel** (⚙). Klik erop om onderdelen aan of uit te zetten; bij elke optie staat wat die doet.
+Je keuze geldt alleen voor jou, in deze browser, en blijft bewaard bij updates. Met **Standaard herstellen** zet je alles terug.
+Het venster is ook te openen vanuit de console met `otclLabels.settings()`.
+
+De standaardwaarden voor iedereen staan bovenin het script bij `DEFAULT_FEATURES`.
 
 ## Voor beheerders: een nieuwe versie uitbrengen
 

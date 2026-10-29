@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.4.1
+// @version      1.5.0
 // @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Alleen lezen.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
@@ -18,13 +18,15 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.4.1';
+    const SCRIPT_VERSION = '1.5.0';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
-    // INSTELLINGEN: zet een onderdeel op false om het uit te schakelen.
+    // INSTELLINGEN: standaardwaarden. Elke gebruiker kan onderdelen zelf
+    // aan- en uitzetten via het tandwiel rechtsonder in Jira; die keuze
+    // wordt in deze browser bewaard (localStorage) en overleeft updates.
     // =====================================================================
-    const FEATURES = {
+    const DEFAULT_FEATURES = {
         swimlaneHeaders: true,   // labels in de koppen van swimlanes (bord, Group: Story)
         boardCards: true,        // labels op de kaarten van het bord (bijv. subtaken)
         onHoldDimsCard: true,    // kaart met label "on-hold" iets doorzichtig maken (zoals het oude script)
@@ -32,6 +34,70 @@
         backlogDividers: true,   // ticket met label "divider" als scheidingslijn in de backlog
         flaggedYellow: true      // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
     };
+
+    // Teksten in het instellingenvenster (volgorde = volgorde in het venster)
+    const FEATURE_INFO = [
+        {
+            key: 'swimlaneHeaders',
+            title: 'Labels in swimlane-koppen',
+            help: 'Toont de labels van een story als badges in de kop van de swimlane op het bord (met Group: Story).'
+        },
+        {
+            key: 'boardCards',
+            title: 'Labels op bordkaarten',
+            help: 'Toont labels als badges op de kaarten van het bord, tussen de titel en de ticketsleutel. Werkt ook voor subtaken.'
+        },
+        {
+            key: 'onHoldDimsCard',
+            title: 'On-hold kaarten doorzichtig',
+            help: 'Een kaart met het label "on-hold" wordt op het bord iets doorzichtig, zodat je ziet dat er niet aan gewerkt wordt.'
+        },
+        {
+            key: 'backlogRows',
+            title: 'Labels in de backlog',
+            help: 'Toont labels in de regels van de backlog. Deadline en overleg staan vóór de titel, de overige labels erachter.'
+        },
+        {
+            key: 'backlogDividers',
+            title: 'Divider-regels in de backlog',
+            help: 'Een ticket met het label "divider" wordt in de backlog een scheidingslijn met de titel in het midden. Slepen en aanklikken blijft werken.'
+        },
+        {
+            key: 'flaggedYellow',
+            title: 'Geflagde tickets geel in de backlog',
+            help: 'Jira kleurt geflagde tickets in de backlog roze. Met deze optie worden ze geel, net als op het bord.'
+        }
+    ];
+
+    const SETTINGS_KEY = 'otclSettings.v1';
+    const FEATURES = loadSettings();
+
+    function loadSettings() {
+        const settings = Object.assign({}, DEFAULT_FEATURES);
+        try {
+            const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+            for (const key of Object.keys(DEFAULT_FEATURES)) {
+                if (typeof saved[key] === 'boolean') settings[key] = saved[key];
+            }
+        } catch (e) {
+            console.debug(LOG_PREFIX, 'Instellingen lezen mislukt', e);
+        }
+        return settings;
+    }
+
+    function saveSettings() {
+        // Alleen afwijkingen van de standaard bewaren, zodat nieuwe standaarden in updates doorkomen
+        const changed = {};
+        for (const key of Object.keys(DEFAULT_FEATURES)) {
+            if (FEATURES[key] !== DEFAULT_FEATURES[key]) changed[key] = FEATURES[key];
+        }
+        try {
+            if (Object.keys(changed).length) localStorage.setItem(SETTINGS_KEY, JSON.stringify(changed));
+            else localStorage.removeItem(SETTINGS_KEY);
+        } catch (e) {
+            console.debug(LOG_PREFIX, 'Instellingen opslaan mislukt', e);
+        }
+    }
 
     // =====================================================================
     // SELECTORS: alles wat het script in de Jira-pagina zoekt staat hier.
@@ -422,6 +488,14 @@
         parent.querySelectorAll(':scope > .otcl-badges').forEach(el => el.remove());
     }
 
+    /** Haalt alles weg wat het script aan de pagina heeft toegevoegd (behalve het tandwiel). */
+    function clearPage() {
+        document.querySelectorAll('.otcl-badges, .otcl-divider-overlay').forEach(el => el.remove());
+        ['otcl-card-on-hold', 'otcl-flagged', 'otcl-divider-host'].forEach(cls => {
+            document.querySelectorAll(`.${cls}`).forEach(el => el.classList.remove(cls));
+        });
+    }
+
     // =====================================================================
     // VERWERKING PER ONDERDEEL
     // =====================================================================
@@ -517,6 +591,118 @@
             overlay.dataset.otclKey = key;
             overlay.firstChild.textContent = text;
         }
+    }
+
+    // =====================================================================
+    // INSTELLINGENVENSTER: tandwiel rechtsonder, per gebruiker aan/uit
+    // =====================================================================
+    function applySetting(key, value) {
+        FEATURES[key] = value;
+        saveSettings();
+        clearPage();
+        scheduleRun();
+    }
+
+    function createSettingsUi() {
+        if (document.querySelector('.otcl-settings-button')) return;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'otcl-settings-button';
+        button.title = 'Instellingen OT label badges';
+        button.setAttribute('aria-label', 'Instellingen OT label badges');
+        button.setAttribute('aria-expanded', 'false');
+        button.textContent = '⚙';
+
+        const panel = document.createElement('div');
+        panel.className = 'otcl-settings-panel';
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-label', 'Instellingen OT label badges');
+        panel.hidden = true;
+
+        const header = document.createElement('div');
+        header.className = 'otcl-settings-header';
+        const title = document.createElement('strong');
+        title.textContent = 'OT label badges';
+        const version = document.createElement('span');
+        version.className = 'otcl-settings-version';
+        version.textContent = `v${SCRIPT_VERSION}`;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'otcl-settings-close';
+        close.setAttribute('aria-label', 'Sluiten');
+        close.textContent = '×';
+        header.append(title, version, close);
+
+        const intro = document.createElement('p');
+        intro.className = 'otcl-settings-intro';
+        intro.textContent = 'Zet onderdelen aan of uit. Je keuze geldt alleen voor jou, in deze browser.';
+
+        const list = document.createElement('div');
+        list.className = 'otcl-settings-list';
+        const checkboxes = {};
+        FEATURE_INFO.forEach(info => {
+            const row = document.createElement('label');
+            row.className = 'otcl-settings-row';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = FEATURES[info.key];
+            checkbox.addEventListener('change', () => applySetting(info.key, checkbox.checked));
+            checkboxes[info.key] = checkbox;
+            const text = document.createElement('span');
+            text.className = 'otcl-settings-text';
+            const name = document.createElement('span');
+            name.className = 'otcl-settings-name';
+            name.textContent = info.title;
+            const help = document.createElement('span');
+            help.className = 'otcl-settings-help';
+            help.textContent = info.help;
+            text.append(name, help);
+            row.append(checkbox, text);
+            list.appendChild(row);
+        });
+
+        const footer = document.createElement('div');
+        footer.className = 'otcl-settings-footer';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'otcl-settings-reset';
+        reset.textContent = 'Standaard herstellen';
+        reset.addEventListener('click', () => {
+            Object.assign(FEATURES, DEFAULT_FEATURES);
+            Object.keys(checkboxes).forEach(key => { checkboxes[key].checked = FEATURES[key]; });
+            saveSettings();
+            clearPage();
+            scheduleRun();
+        });
+        footer.appendChild(reset);
+
+        panel.append(header, intro, list, footer);
+
+        function setOpen(open) {
+            panel.hidden = !open;
+            button.setAttribute('aria-expanded', String(open));
+            button.classList.toggle('otcl-settings-button--open', open);
+        }
+        button.addEventListener('click', () => setOpen(panel.hidden));
+        close.addEventListener('click', () => setOpen(false));
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !panel.hidden) setOpen(false);
+        });
+        document.addEventListener('mousedown', event => {
+            if (!panel.hidden && !panel.contains(event.target) && !button.contains(event.target)) setOpen(false);
+        });
+        // Toetsen in het venster niet doorgeven aan Jira (sneltoetsen)
+        panel.addEventListener('keydown', event => {
+            event.stopPropagation();
+            if (event.key === 'Escape') {
+                setOpen(false);
+                button.focus();
+            }
+        });
+
+        document.body.append(panel, button);
+        return setOpen;
     }
 
     // =====================================================================
@@ -659,6 +845,130 @@
                 font-size: 12px;
                 font-weight: 600;
             }
+
+            /* Instellingen: tandwiel rechtsonder en venster erboven */
+            .otcl-settings-button {
+                position: fixed;
+                right: 16px;
+                bottom: 16px;
+                z-index: 2147483000;
+                width: 36px;
+                height: 36px;
+                padding: 0;
+                border: 1px solid var(--ds-border, #dfe1e6);
+                border-radius: 50%;
+                background: var(--ds-surface-overlay, #ffffff);
+                color: var(--ds-icon-subtle, #626f86);
+                box-shadow: var(--ds-shadow-raised, 0 1px 2px #091e423f);
+                font-size: 20px;
+                line-height: 34px;
+                text-align: center;
+                cursor: pointer;
+                opacity: 0.6;
+                transition: opacity 0.15s, transform 0.3s;
+            }
+            .otcl-settings-button:hover,
+            .otcl-settings-button:focus-visible,
+            .otcl-settings-button--open {
+                opacity: 1;
+                color: var(--ds-icon, #44546f);
+            }
+            .otcl-settings-button--open { transform: rotate(60deg); }
+            .otcl-settings-button:focus-visible {
+                outline: 2px solid var(--ds-border-focused, #388bff);
+                outline-offset: 2px;
+            }
+            .otcl-settings-panel {
+                position: fixed;
+                right: 16px;
+                bottom: 60px;
+                z-index: 2147483000;
+                box-sizing: border-box;
+                width: 360px;
+                max-width: calc(100vw - 32px);
+                max-height: calc(100vh - 80px);
+                overflow-y: auto;
+                padding: 12px 16px;
+                border-radius: 8px;
+                background: var(--ds-surface-overlay, #ffffff);
+                color: var(--ds-text, #172b4d);
+                box-shadow: var(--ds-shadow-overlay, 0 8px 12px #091e4226, 0 0 1px #091e424f);
+                font-size: 14px;
+                line-height: 20px;
+            }
+            .otcl-settings-panel[hidden] { display: none; }
+            .otcl-settings-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .otcl-settings-version {
+                color: var(--ds-text-subtlest, #626f86);
+                font-size: 12px;
+            }
+            .otcl-settings-close {
+                margin-left: auto;
+                padding: 0 6px;
+                border: none;
+                border-radius: 4px;
+                background: none;
+                color: var(--ds-icon-subtle, #626f86);
+                font-size: 20px;
+                line-height: 24px;
+                cursor: pointer;
+            }
+            .otcl-settings-close:hover { background: var(--ds-background-neutral-subtle-hovered, #091e420f); }
+            .otcl-settings-intro {
+                margin: 4px 0 8px;
+                color: var(--ds-text-subtle, #44546f);
+                font-size: 12px;
+            }
+            .otcl-settings-row {
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+                padding: 8px 6px;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            .otcl-settings-row:hover { background: var(--ds-background-neutral-subtle-hovered, #091e420f); }
+            .otcl-settings-row input {
+                flex-shrink: 0;
+                width: 16px;
+                height: 16px;
+                margin: 2px 0 0;
+                accent-color: var(--ds-background-brand-bold, #0c66e4);
+                cursor: pointer;
+            }
+            .otcl-settings-text {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+            .otcl-settings-name { font-weight: 600; }
+            .otcl-settings-help {
+                color: var(--ds-text-subtle, #44546f);
+                font-size: 12px;
+                line-height: 16px;
+            }
+            .otcl-settings-footer {
+                display: flex;
+                justify-content: flex-end;
+                margin-top: 8px;
+                padding-top: 8px;
+                border-top: 1px solid var(--ds-border, #091e4224);
+            }
+            .otcl-settings-reset {
+                padding: 4px 10px;
+                border: none;
+                border-radius: 4px;
+                background: var(--ds-background-neutral, #091e420f);
+                color: var(--ds-text, #172b4d);
+                font: inherit;
+                font-size: 13px;
+                cursor: pointer;
+            }
+            .otcl-settings-reset:hover { background: var(--ds-background-neutral-hovered, #091e4224); }
         `;
         document.head.appendChild(style);
     }
@@ -684,7 +994,7 @@
             console.debug(LOG_PREFIX, 'Fout bij bordkaarten', e);
         }
         try {
-            if (FEATURES.backlogRows || FEATURES.backlogDividers) processBacklogRows();
+            if (FEATURES.backlogRows || FEATURES.backlogDividers || FEATURES.flaggedYellow) processBacklogRows();
         } catch (e) {
             console.debug(LOG_PREFIX, 'Fout bij backlog-regels', e);
         }
@@ -710,6 +1020,7 @@
     }
 
     injectStyles();
+    const setSettingsOpen = createSettingsUi();
     new MutationObserver(mutations => {
         if (mutations.every(isOwnMutation)) return;
         scheduleRun();
@@ -745,10 +1056,14 @@
                 ticketsInCache: Object.keys(cache).length,
                 inWachtrij: queue.size,
                 geopendTicket: lastSelectedIssue,
-                laatsteFout: lastError ? String(lastError.message || lastError) : null
+                laatsteFout: lastError ? String(lastError.message || lastError) : null,
+                instellingen: JSON.stringify(FEATURES)
             };
             console.table(info);
             return info;
+        },
+        settings() {
+            if (setSettingsOpen) setSettingsOpen(true);
         },
         clearCache() {
             cache = {};
