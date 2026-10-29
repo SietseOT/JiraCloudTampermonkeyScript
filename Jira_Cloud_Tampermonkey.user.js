@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.4.1
-// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Alleen lezen.
+// @version      1.5.0
+// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
 // @grant        none
@@ -18,20 +18,104 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.4.1';
+    const SCRIPT_VERSION = '1.5.0';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
-    // INSTELLINGEN: zet een onderdeel op false om het uit te schakelen.
+    // INSTELLINGEN: standaardwaarden. Elke gebruiker kan onderdelen zelf
+    // aan- en uitzetten via het tandwiel rechtsonder in Jira; die keuze
+    // wordt in deze browser bewaard (localStorage) en overleeft updates.
     // =====================================================================
-    const FEATURES = {
+    const DEFAULT_FEATURES = {
         swimlaneHeaders: true,   // labels in de koppen van swimlanes (bord, Group: Story)
         boardCards: true,        // labels op de kaarten van het bord (bijv. subtaken)
         onHoldDimsCard: true,    // kaart met label "on-hold" iets doorzichtig maken (zoals het oude script)
         backlogRows: true,       // labels in de regel van een ticket in de backlog
         backlogDividers: true,   // ticket met label "divider" als scheidingslijn in de backlog
-        flaggedYellow: true      // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
+        flaggedYellow: true,     // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
+        dueDateColors: true,     // kader om het due date-veld in de backlog op basis van labels (zie DUE_DATE_RULES)
+        logWorkTimeSpentOnly: true, // transitievenster: "Log Work" direct open, alleen Time Spent zichtbaar
+        inheritComponents: true  // nieuwe subtaak krijgt de componenten van de parent (wijzigt het ticket!)
     };
+
+    // Teksten in het instellingenvenster (volgorde = volgorde in het venster)
+    const FEATURE_INFO = [
+        {
+            key: 'swimlaneHeaders',
+            title: 'Labels in swimlane-koppen',
+            help: 'Toont de labels van een story als badges in de kop van de swimlane op het bord (met Group: Story).'
+        },
+        {
+            key: 'boardCards',
+            title: 'Labels op bordkaarten',
+            help: 'Toont labels als badges op de kaarten van het bord, tussen de titel en de ticketsleutel. Werkt ook voor subtaken.'
+        },
+        {
+            key: 'onHoldDimsCard',
+            title: 'On-hold kaarten doorzichtig',
+            help: 'Een kaart met het label "on-hold" wordt op het bord iets doorzichtig, zodat je ziet dat er niet aan gewerkt wordt.'
+        },
+        {
+            key: 'backlogRows',
+            title: 'Labels in de backlog',
+            help: 'Toont labels in de regels van de backlog. Deadline en overleg staan vóór de titel, de overige labels erachter.'
+        },
+        {
+            key: 'backlogDividers',
+            title: 'Divider-regels in de backlog',
+            help: 'Een ticket met het label "divider" wordt in de backlog een scheidingslijn met de titel in het midden. Slepen en aanklikken blijft werken.'
+        },
+        {
+            key: 'flaggedYellow',
+            title: 'Geflagde tickets geel in de backlog',
+            help: 'Jira kleurt geflagde tickets in de backlog roze. Met deze optie worden ze geel, net als op het bord.'
+        },
+        {
+            key: 'dueDateColors',
+            title: 'Due date met kader in de backlog',
+            help: 'Heeft een ticket een due date én het label "overleg" (zonder datum erachter), dan krijgt het due date-veld in de backlog een paars kader.'
+        },
+        {
+            key: 'logWorkTimeSpentOnly',
+            title: 'Log Work alleen Time Spent',
+            help: 'In het venster bij een statuswijziging staat de sectie Log Work meteen open met alleen het veld Time Spent. Time Remaining en Date Started vult Jira zelf.'
+        },
+        {
+            key: 'inheritComponents',
+            title: 'Subtaken erven componenten',
+            help: 'Maak je in een geopend ticket een subtaak aan, dan krijgt die dezelfde componenten als de parent (bijv. OT Software), zodat hij in dezelfde swimlane staat. Let op: dit past het ticket in Jira aan.'
+        }
+    ];
+
+    const SETTINGS_KEY = 'otclSettings.v1';
+    const FEATURES = loadSettings();
+
+    function loadSettings() {
+        const settings = Object.assign({}, DEFAULT_FEATURES);
+        try {
+            const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+            for (const key of Object.keys(DEFAULT_FEATURES)) {
+                if (typeof saved[key] === 'boolean') settings[key] = saved[key];
+            }
+        } catch (e) {
+            console.debug(LOG_PREFIX, 'Instellingen lezen mislukt', e);
+        }
+        return settings;
+    }
+
+    function saveSettings() {
+        // Alleen afwijkingen van de standaard bewaren, zodat nieuwe standaarden in updates doorkomen
+        const changed = {};
+        for (const key of Object.keys(DEFAULT_FEATURES)) {
+            if (FEATURES[key] !== DEFAULT_FEATURES[key]) changed[key] = FEATURES[key];
+        }
+        try {
+            if (Object.keys(changed).length) localStorage.setItem(SETTINGS_KEY, JSON.stringify(changed));
+            else localStorage.removeItem(SETTINGS_KEY);
+        } catch (e) {
+            console.debug(LOG_PREFIX, 'Instellingen opslaan mislukt', e);
+        }
+    }
 
     // =====================================================================
     // SELECTORS: alles wat het script in de Jira-pagina zoekt staat hier.
@@ -56,7 +140,20 @@
         backlogCardContainer: '[data-testid="software-backlog.card-list.card.card-contents.card-container"]',
         backlogSummary: '[data-testid="software-backlog.card-list.card.card-contents.summary"]',
         backlogSummaryText: '[data-testid="software-backlog.card-list.card.card-contents.summary-field.summary-field-static.content"]',
-        backlogClickLayer: '[data-testid="software-backlog.card-list.card.card-contents.interaction-layer.accessible-card"]'
+        backlogClickLayer: '[data-testid="software-backlog.card-list.card.card-contents.interaction-layer.accessible-card"]',
+
+        // Het zichtbare vakje van het standaard due date-veld in een backlog-regel
+        dueDate: '[data-testid="coloured-due-date.ui.colored-due-date-container"]',
+        // Transitievenster (status wijzigen): sectie "Log Work". Herkend aan data-testid,
+        // dus onafhankelijk van de taal van de gebruiker. Eindigt-op ($=) zodat het
+        // ook werkt als Jira het voorvoegsel per venster (ticket, bord, lijst) anders noemt.
+        worklogSection: '[data-testid$=".field.worklog"]',
+        worklogToggle: 'button[aria-expanded]',
+        worklogTimeSpent: '[data-testid$="log-work-time-spent"]',
+        worklogTimeRemaining: '[data-testid$="log-work-time-remaining"]',
+        worklogDateStarted: '[data-testid$="log-work-date-field"]',
+        // Link "Learn about logging work"; het blok eromheen bevat ook de uitlegtekst
+        worklogHelpLink: 'a[href*="TimeTrackingHelp"]'
     };
 
     const API = {
@@ -69,7 +166,7 @@
     // Jira-veld "Flagged" (vlag aan = gevuld). Het ID is per Jira-omgeving vast;
     // opzoeken via /rest/api/3/field als het ooit verandert.
     const FLAGGED_FIELD = 'customfield_10021';
-    const FETCH_FIELDS = `labels,${FLAGGED_FIELD}`;
+    const FETCH_FIELDS = `labels,duedate,${FLAGGED_FIELD}`;
 
     // Welk ticket staat open? Jira zet dit in de adresbalk (?selectedIssue=OT-9 of /browse/OT-9)
     const SELECTED_ISSUE_PARAM = 'selectedIssue';
@@ -78,7 +175,8 @@
     // =====================================================================
     // LABELWEERGAVE
     // =====================================================================
-    // Labels met een datum erachter, bijv. "deadline:2026-10-12" of "overleg-15-03-2026"
+    // Labels met een datum erachter, bijv. "deadline:2026-10-12" of "overleg-15-03-2026".
+    // Alleen het voorvoegsel zonder iets erachter (bijv. "Overleg") is géén datumlabel.
     const DATE_PREFIX_LABELS = [
         { prefix: 'deadline', icon: '📅', title: 'Deadline', cls: 'otcl-badge--deadline' },
         { prefix: 'overleg', icon: '💬', title: 'Overleg', cls: 'otcl-badge--overleg' }
@@ -97,8 +195,18 @@
     };
 
     // Labels die niet als badge getoond worden (net als in het oude script)
-    const HIDDEN_LABELS = new Set(['divider', 'small', 'medium', 'large', 'geen-punten', 'onduidelijk-punten']);
+    // "overleg" zonder datum geeft alleen het kader om de due date (zie DUE_DATE_RULES).
+    const HIDDEN_LABELS = new Set(['divider', 'small', 'medium', 'large', 'geen-punten', 'onduidelijk-punten', 'overleg']);
     const DIVIDER_LABEL = 'divider';
+
+    // Kader om het standaard due date-veld (alleen als er een due date is ingevuld).
+    // Label is hoofdletterongevoelig; de eerste regel die past wint. Een nieuwe
+    // combinatie toevoegen: een regel hier en (bij een nieuwe kleur) een CSS-klasse
+    // "otcl-due--<kleur>" in injectStyles().
+    const DUE_DATE_RULES = [
+        { label: 'overleg', cls: 'otcl-due--purple' }
+    ];
+    const DUE_DATE_CLASSES = [...new Set(DUE_DATE_RULES.map(rule => rule.cls))];
 
     // =====================================================================
     // CACHE EN OPHALEN
@@ -135,6 +243,7 @@
                     || typeof entry.flagged !== 'boolean'
                     || typeof entry.lastFetched !== 'number' || typeof entry.lastSeen !== 'number';
                 if (malformed || now - entry.lastSeen > FORGET_AFTER) delete data[key];
+                else if (entry.dueDate === undefined) entry.lastFetched = 0; // cache van vóór v1.5.0: due date nog ophalen
             }
             return data;
         } catch (e) {
@@ -197,8 +306,8 @@
             const now = Date.now();
             keys.forEach(key => {
                 // Niet gevonden (verwijderd, verplaatst of geen rechten): onthouden als "geen labels"
-                const data = found[key] || { labels: [], flagged: false };
-                cache[key] = { labels: data.labels, flagged: data.flagged, lastFetched: now, lastSeen: now };
+                const data = found[key] || { labels: [], flagged: false, dueDate: null };
+                cache[key] = { labels: data.labels, flagged: data.flagged, dueDate: data.dueDate, lastFetched: now, lastSeen: now };
             });
             lastError = null;
             scheduleSave();
@@ -247,25 +356,97 @@
         if (singleInFlight.has(key) || Date.now() < pausedUntil) return;
         singleInFlight.add(key);
         try {
-            const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=${FETCH_FIELDS}`, {
+            const fields = FEATURES.inheritComponents ? `${FETCH_FIELDS},${INHERIT_FIELDS}` : FETCH_FIELDS;
+            const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=${fields}`, {
                 credentials: 'same-origin',
                 headers: { Accept: 'application/json' }
             });
             if (response.status === 404) return; // verwijderd of geen rechten
             if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
             const data = await response.json();
-            const { labels, flagged } = readIssueFields(data.fields);
+            if (FEATURES.inheritComponents) checkNewSubtasks(key, data.fields);
+            const { labels, flagged, dueDate } = readIssueFields(data.fields);
             const now = Date.now();
             const previous = cache[key];
-            cache[key] = { labels, flagged, lastFetched: now, lastSeen: now };
+            cache[key] = { labels, flagged, dueDate, lastFetched: now, lastSeen: now };
             scheduleSave();
-            const changed = !previous || previous.flagged !== flagged
+            const changed = !previous || previous.flagged !== flagged || previous.dueDate !== dueDate
                 || previous.labels.join('\u0001') !== labels.join('\u0001');
             if (changed) scheduleRun();
         } catch (err) {
             console.debug(LOG_PREFIX, `Direct verversen van ${key} mislukt`, err);
         } finally {
             singleInFlight.delete(key);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // COMPONENTEN OVERERVEN
+    // Maak je in een geopend ticket een subtaak aan, dan krijgt die subtaak
+    // dezelfde componenten als de parent (bijv. "OT Software"), zodat hij in
+    // dezelfde swimlane terechtkomt. Alleen voor subtaken die erbij komen
+    // terwijl de parent open staat; bestaande subtaken blijven ongemoeid.
+    // ---------------------------------------------------------------------
+    const INHERIT_FIELDS = 'components,subtasks';
+    const NEW_SUBTASK_MAX_AGE = 10 * 60 * 1000;   // subtaak ouder dan 10 minuten: niet aanpassen
+    const knownSubtasks = new Map();              // parent -> subtaken die er al waren bij openen
+    const handledSubtasks = new Set();            // subtaken die we al behandeld hebben (nooit opnieuw)
+    let inheritedCount = 0;
+
+    function checkNewSubtasks(parentKey, fields) {
+        const subtaskKeys = (fields && Array.isArray(fields.subtasks) ? fields.subtasks : [])
+            .map(subtask => subtask && subtask.key)
+            .filter(Boolean);
+        const known = knownSubtasks.get(parentKey);
+        if (!known) {
+            // Eerste keer dat we deze parent zien: dit zijn de bestaande subtaken
+            knownSubtasks.set(parentKey, new Set(subtaskKeys));
+            return;
+        }
+        const components = fields && Array.isArray(fields.components) ? fields.components : [];
+        subtaskKeys.forEach(key => {
+            if (known.has(key)) return;
+            known.add(key);
+            if (!components.length || handledSubtasks.has(key)) return;
+            handledSubtasks.add(key);
+            inheritComponents(key, parentKey, components);
+        });
+    }
+
+    /** Voegt de ontbrekende componenten van de parent toe aan een net aangemaakte subtaak. */
+    async function inheritComponents(key, parentKey, components) {
+        try {
+            const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=components,created,parent`, {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' }
+            });
+            if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
+            const { fields } = await response.json();
+            if (!fields || !fields.parent || fields.parent.key !== parentKey) return;
+            // Jira geeft "2026-10-29T14:41:00.000+0100"; de tijdzone krijgt een dubbele punt zodat elke browser het leest
+            const created = Date.parse(String(fields.created).replace(/([+-]\d{2})(\d{2})$/, '$1:$2'));
+            if (!Number.isFinite(created) || Date.now() - created > NEW_SUBTASK_MAX_AGE) return;
+
+            const present = new Set((fields.components || []).map(component => component.id));
+            const missing = components.filter(component => !present.has(component.id));
+            if (!missing.length) return;
+
+            const update = await fetch(`${API.issue}${encodeURIComponent(key)}`, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Atlassian-Token': 'no-check'
+                },
+                // "add" laat componenten die de subtaak al heeft staan
+                body: JSON.stringify({ update: { components: missing.map(component => ({ add: { id: component.id } })) } })
+            });
+            if (!update.ok) throw new Error(`Jira API gaf status ${update.status}: ${await update.text()}`);
+            inheritedCount++;
+            console.info(LOG_PREFIX, `${key}: componenten van ${parentKey} overgenomen (${missing.map(component => component.name).join(', ')})`);
+        } catch (err) {
+            console.warn(LOG_PREFIX, `Componenten overnemen voor ${key} mislukt`, err);
         }
     }
 
@@ -278,12 +459,13 @@
         scheduleRun();
     }
 
-    /** Haalt labels en vlag uit de velden die Jira teruggeeft. */
+    /** Haalt labels, vlag en due date uit de velden die Jira teruggeeft. */
     function readIssueFields(fields) {
         const labels = fields && Array.isArray(fields.labels) ? fields.labels : [];
         const flag = fields && fields[FLAGGED_FIELD];
         const flagged = Array.isArray(flag) ? flag.length > 0 : Boolean(flag);
-        return { labels, flagged };
+        const dueDate = (fields && fields.duedate) || null;
+        return { labels, flagged, dueDate };
     }
 
     /** Vlag van een ticket uit de cache (null als nog onbekend). */
@@ -331,15 +513,20 @@
         return iso ? `${iso[3]}-${iso[2]}-${iso[1]}` : text;
     }
 
+    /** Het datumlabel-type van een label, of undefined. Er moet iets achter het voorvoegsel staan. */
+    function findDateLabelDef(label) {
+        const lower = label.toLowerCase();
+        return DATE_PREFIX_LABELS.find(def => lower.length > def.prefix.length && lower.startsWith(def.prefix));
+    }
+
     /** Bepaalt icoon, tekst, opmaak en volgorde van één label. compact = kortere tekst voor koppen. */
     function describeLabel(label, compact) {
         const lower = label.toLowerCase();
-        for (const def of DATE_PREFIX_LABELS) {
-            if (lower.startsWith(def.prefix)) {
-                const rest = formatDateText(label.slice(def.prefix.length));
-                const text = compact ? (rest || def.title) : `${def.title}${rest ? ' ' + rest : ''}`;
-                return { icon: def.icon, text, cls: def.cls, order: 0 };
-            }
+        const def = findDateLabelDef(label);
+        if (def) {
+            const rest = formatDateText(label.slice(def.prefix.length));
+            const text = compact ? (rest || def.title) : `${def.title}${rest ? ' ' + rest : ''}`;
+            return { icon: def.icon, text, cls: def.cls, order: 0 };
         }
         const special = SPECIAL_LABELS[lower];
         if (special) {
@@ -368,8 +555,7 @@
     }
 
     function isDateLabel(label) {
-        const lower = label.toLowerCase();
-        return DATE_PREFIX_LABELS.some(def => lower.startsWith(def.prefix));
+        return Boolean(findDateLabelDef(label));
     }
 
     /** Welke labels in welk vak komen. row-lead = vóór de titel, row-tail = achter de titel. */
@@ -420,6 +606,14 @@
 
     function removeBadges(parent) {
         parent.querySelectorAll(':scope > .otcl-badges').forEach(el => el.remove());
+    }
+
+    /** Haalt alles weg wat het script aan de pagina heeft toegevoegd (behalve het tandwiel). */
+    function clearPage() {
+        document.querySelectorAll('.otcl-badges, .otcl-divider-overlay').forEach(el => el.remove());
+        ['otcl-card-on-hold', 'otcl-flagged', 'otcl-divider-host', 'otcl-worklog', 'otcl-worklog-hidden', ...DUE_DATE_CLASSES].forEach(cls => {
+            document.querySelectorAll(`.${cls}`).forEach(el => el.classList.remove(cls));
+        });
     }
 
     // =====================================================================
@@ -484,12 +678,37 @@
                 container.classList.toggle('otcl-flagged', flagged);
             }
 
+            applyDueDateStyle(row, key);
+
             if (FEATURES.backlogRows && !isDivider) {
                 upsertBadges(summaryBox, { before: summary }, key, labels, 'row-lead');
                 upsertBadges(summaryBox, { after: summary }, key, labels, 'row-tail');
             } else {
                 removeBadges(summaryBox);
             }
+        });
+    }
+
+    /** CSS-klasse voor het due date-veld van een ticket, of null (geen due date of geen passende regel). */
+    function dueDateClass(key) {
+        const entry = cache[key];
+        if (!FEATURES.dueDateColors || !entry || !entry.dueDate) return null;
+        const labels = entry.labels.map(label => label.toLowerCase());
+        const rule = DUE_DATE_RULES.find(r => labels.includes(r.label.toLowerCase()));
+        return rule ? rule.cls : null;
+    }
+
+    /**
+     * Zet het kader om het due date-veld binnen `root`. Elementen die Jira hergebruikt
+     * voor een ander ticket worden ook weer opgeschoond.
+     */
+    function applyDueDateStyle(root, key) {
+        const wanted = dueDateClass(key);
+        root.querySelectorAll(SELECTORS.dueDate).forEach(field => {
+            DUE_DATE_CLASSES.forEach(cls => {
+                const on = cls === wanted;
+                if (field.classList.contains(cls) !== on) field.classList.toggle(cls, on);
+            });
         });
     }
 
@@ -517,6 +736,170 @@
             overlay.dataset.otclKey = key;
             overlay.firstChild.textContent = text;
         }
+    }
+
+    // =====================================================================
+    // INSTELLINGENVENSTER: tandwiel rechtsonder, per gebruiker aan/uit
+    // =====================================================================
+    function applySetting(key, value) {
+        FEATURES[key] = value;
+        saveSettings();
+        clearPage();
+        scheduleRun();
+    }
+
+    function createSettingsUi() {
+        if (document.querySelector('.otcl-settings-button')) return;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'otcl-settings-button';
+        button.title = 'Instellingen OT label badges';
+        button.setAttribute('aria-label', 'Instellingen OT label badges');
+        button.setAttribute('aria-expanded', 'false');
+        button.textContent = '⚙';
+
+        const panel = document.createElement('div');
+        panel.className = 'otcl-settings-panel';
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-label', 'Instellingen OT label badges');
+        panel.hidden = true;
+
+        const header = document.createElement('div');
+        header.className = 'otcl-settings-header';
+        const title = document.createElement('strong');
+        title.textContent = 'OT label badges';
+        const version = document.createElement('span');
+        version.className = 'otcl-settings-version';
+        version.textContent = `v${SCRIPT_VERSION}`;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'otcl-settings-close';
+        close.setAttribute('aria-label', 'Sluiten');
+        close.textContent = '×';
+        header.append(title, version, close);
+
+        const intro = document.createElement('p');
+        intro.className = 'otcl-settings-intro';
+        intro.textContent = 'Zet onderdelen aan of uit. Je keuze geldt alleen voor jou, in deze browser.';
+
+        const list = document.createElement('div');
+        list.className = 'otcl-settings-list';
+        const checkboxes = {};
+        FEATURE_INFO.forEach(info => {
+            const row = document.createElement('label');
+            row.className = 'otcl-settings-row';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = FEATURES[info.key];
+            checkbox.addEventListener('change', () => applySetting(info.key, checkbox.checked));
+            checkboxes[info.key] = checkbox;
+            const text = document.createElement('span');
+            text.className = 'otcl-settings-text';
+            const name = document.createElement('span');
+            name.className = 'otcl-settings-name';
+            name.textContent = info.title;
+            const help = document.createElement('span');
+            help.className = 'otcl-settings-help';
+            help.textContent = info.help;
+            text.append(name, help);
+            row.append(checkbox, text);
+            list.appendChild(row);
+        });
+
+        const footer = document.createElement('div');
+        footer.className = 'otcl-settings-footer';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'otcl-settings-reset';
+        reset.textContent = 'Standaard herstellen';
+        reset.addEventListener('click', () => {
+            Object.assign(FEATURES, DEFAULT_FEATURES);
+            Object.keys(checkboxes).forEach(key => { checkboxes[key].checked = FEATURES[key]; });
+            saveSettings();
+            clearPage();
+            scheduleRun();
+        });
+        footer.appendChild(reset);
+
+        panel.append(header, intro, list, footer);
+
+        function setOpen(open) {
+            panel.hidden = !open;
+            button.setAttribute('aria-expanded', String(open));
+            button.classList.toggle('otcl-settings-button--open', open);
+        }
+        button.addEventListener('click', () => setOpen(panel.hidden));
+        close.addEventListener('click', () => setOpen(false));
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !panel.hidden) setOpen(false);
+        });
+        document.addEventListener('mousedown', event => {
+            if (!panel.hidden && !panel.contains(event.target) && !button.contains(event.target)) setOpen(false);
+        });
+        // Toetsen in het venster niet doorgeven aan Jira (sneltoetsen)
+        panel.addEventListener('keydown', event => {
+            event.stopPropagation();
+            if (event.key === 'Escape') {
+                setOpen(false);
+                button.focus();
+            }
+        });
+
+        document.body.append(panel, button);
+        return setOpen;
+    }
+
+    // =====================================================================
+    // TRANSITIEVENSTER: LOG WORK
+    // In elk statusvenster met een sectie "Log Work" klappen we die sectie
+    // automatisch open en tonen we alleen het veld Time Spent. Time Remaining
+    // en Date Started blijven gewoon in het formulier (met Jira's standaard-
+    // waarden), ze zijn alleen onzichtbaar. Werkt in elk venster, ongeacht
+    // waar het geopend wordt (ticket, paneel, bord, lijst, zoekresultaten).
+    // =====================================================================
+    const WORKLOG_MAX_CLICKS = 3;   // nooit eindeloos blijven klikken als openklappen niet lukt
+
+    function processLogWork() {
+        document.querySelectorAll(SELECTORS.worklogSection).forEach(section => {
+            if (!section.classList.contains('otcl-worklog')) section.classList.add('otcl-worklog');
+
+            // Uitlegtekst en link "Learn about logging work" zitten samen in één blok
+            const helpLink = section.querySelector(SELECTORS.worklogHelpLink);
+            const helpBlock = helpLink && closestChildOf(section, helpLink);
+            if (helpBlock && !helpBlock.classList.contains('otcl-worklog-hidden')) {
+                helpBlock.classList.add('otcl-worklog-hidden');
+            }
+
+            const toggle = section.querySelector(SELECTORS.worklogToggle);
+            if (!toggle) return;
+            const open = toggle.getAttribute('aria-expanded') === 'true';
+            const clicks = Number(section.dataset.otclClicks || 0);
+            if (!open && clicks < WORKLOG_MAX_CLICKS) {
+                section.dataset.otclClicks = String(clicks + 1);
+                toggle.click();
+                return; // na het openklappen volgt een nieuwe ronde
+            }
+
+            // Kop met de in-/uitklapknop pas verbergen als de sectie echt open is,
+            // zodat je bij een mislukte klik nog zelf kunt openklappen.
+            // De kop is de knop met de tekst "Log Work" ernaast; bevat die ook het veld, dan alleen de knop.
+            const header = toggle.parentElement.querySelector(SELECTORS.worklogTimeSpent) ? toggle : toggle.parentElement;
+            if (header.classList.contains('otcl-worklog-hidden') !== open) {
+                header.classList.toggle('otcl-worklog-hidden', open);
+            }
+            [SELECTORS.worklogTimeRemaining, SELECTORS.worklogDateStarted].forEach(selector => {
+                const field = section.querySelector(selector);
+                if (field && !field.classList.contains('otcl-worklog-hidden')) field.classList.add('otcl-worklog-hidden');
+            });
+        });
+    }
+
+    /** Het kind van `ancestor` waarbinnen `node` ligt (of null). */
+    function closestChildOf(ancestor, node) {
+        let current = node;
+        while (current && current.parentElement !== ancestor) current = current.parentElement;
+        return current;
     }
 
     // =====================================================================
@@ -615,6 +998,14 @@
                 font-weight: 600;
             }
 
+            /* Kader om het standaard due date-veld (zie DUE_DATE_RULES). Jira's eigen
+               rand van 1px wordt gekleurd en met een schaduw naar binnen 2px dik
+               gemaakt: zo verschuift er niets. */
+            .otcl-due--purple {
+                border-color: var(--ds-border-accent-purple, #8f7ee7) !important;
+                box-shadow: inset 0 0 0 1px var(--ds-border-accent-purple, #8f7ee7);
+            }
+
             /* Geflagd: zelfde geel als Jira op het bord gebruikt (token background.warning) */
             .otcl-flagged {
                 background-color: var(--ds-background-warning, #fff5db) !important;
@@ -622,6 +1013,9 @@
             .otcl-flagged:hover {
                 background-color: var(--ds-background-warning-hovered, #ffe2a8) !important;
             }
+
+            /* Transitievenster: onderdelen van "Log Work" verbergen (blijven in het formulier) */
+            .otcl-worklog .otcl-worklog-hidden { display: none !important; }
 
             .otcl-divider-host { position: relative; }
             .otcl-divider-host > :not(.otcl-divider-overlay):not(${SELECTORS.backlogClickLayer}) {
@@ -659,6 +1053,130 @@
                 font-size: 12px;
                 font-weight: 600;
             }
+
+            /* Instellingen: tandwiel rechtsonder en venster erboven */
+            .otcl-settings-button {
+                position: fixed;
+                right: 16px;
+                bottom: 16px;
+                z-index: 2147483000;
+                width: 36px;
+                height: 36px;
+                padding: 0;
+                border: 1px solid var(--ds-border, #dfe1e6);
+                border-radius: 50%;
+                background: var(--ds-surface-overlay, #ffffff);
+                color: var(--ds-icon-subtle, #626f86);
+                box-shadow: var(--ds-shadow-raised, 0 1px 2px #091e423f);
+                font-size: 20px;
+                line-height: 34px;
+                text-align: center;
+                cursor: pointer;
+                opacity: 0.6;
+                transition: opacity 0.15s, transform 0.3s;
+            }
+            .otcl-settings-button:hover,
+            .otcl-settings-button:focus-visible,
+            .otcl-settings-button--open {
+                opacity: 1;
+                color: var(--ds-icon, #44546f);
+            }
+            .otcl-settings-button--open { transform: rotate(60deg); }
+            .otcl-settings-button:focus-visible {
+                outline: 2px solid var(--ds-border-focused, #388bff);
+                outline-offset: 2px;
+            }
+            .otcl-settings-panel {
+                position: fixed;
+                right: 16px;
+                bottom: 60px;
+                z-index: 2147483000;
+                box-sizing: border-box;
+                width: 360px;
+                max-width: calc(100vw - 32px);
+                max-height: calc(100vh - 80px);
+                overflow-y: auto;
+                padding: 12px 16px;
+                border-radius: 8px;
+                background: var(--ds-surface-overlay, #ffffff);
+                color: var(--ds-text, #172b4d);
+                box-shadow: var(--ds-shadow-overlay, 0 8px 12px #091e4226, 0 0 1px #091e424f);
+                font-size: 14px;
+                line-height: 20px;
+            }
+            .otcl-settings-panel[hidden] { display: none; }
+            .otcl-settings-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .otcl-settings-version {
+                color: var(--ds-text-subtlest, #626f86);
+                font-size: 12px;
+            }
+            .otcl-settings-close {
+                margin-left: auto;
+                padding: 0 6px;
+                border: none;
+                border-radius: 4px;
+                background: none;
+                color: var(--ds-icon-subtle, #626f86);
+                font-size: 20px;
+                line-height: 24px;
+                cursor: pointer;
+            }
+            .otcl-settings-close:hover { background: var(--ds-background-neutral-subtle-hovered, #091e420f); }
+            .otcl-settings-intro {
+                margin: 4px 0 8px;
+                color: var(--ds-text-subtle, #44546f);
+                font-size: 12px;
+            }
+            .otcl-settings-row {
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+                padding: 8px 6px;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            .otcl-settings-row:hover { background: var(--ds-background-neutral-subtle-hovered, #091e420f); }
+            .otcl-settings-row input {
+                flex-shrink: 0;
+                width: 16px;
+                height: 16px;
+                margin: 2px 0 0;
+                accent-color: var(--ds-background-brand-bold, #0c66e4);
+                cursor: pointer;
+            }
+            .otcl-settings-text {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+            .otcl-settings-name { font-weight: 600; }
+            .otcl-settings-help {
+                color: var(--ds-text-subtle, #44546f);
+                font-size: 12px;
+                line-height: 16px;
+            }
+            .otcl-settings-footer {
+                display: flex;
+                justify-content: flex-end;
+                margin-top: 8px;
+                padding-top: 8px;
+                border-top: 1px solid var(--ds-border, #091e4224);
+            }
+            .otcl-settings-reset {
+                padding: 4px 10px;
+                border: none;
+                border-radius: 4px;
+                background: var(--ds-background-neutral, #091e420f);
+                color: var(--ds-text, #172b4d);
+                font: inherit;
+                font-size: 13px;
+                cursor: pointer;
+            }
+            .otcl-settings-reset:hover { background: var(--ds-background-neutral-hovered, #091e4224); }
         `;
         document.head.appendChild(style);
     }
@@ -684,9 +1202,16 @@
             console.debug(LOG_PREFIX, 'Fout bij bordkaarten', e);
         }
         try {
-            if (FEATURES.backlogRows || FEATURES.backlogDividers) processBacklogRows();
+            if (FEATURES.backlogRows || FEATURES.backlogDividers || FEATURES.flaggedYellow || FEATURES.dueDateColors) {
+                processBacklogRows();
+            }
         } catch (e) {
             console.debug(LOG_PREFIX, 'Fout bij backlog-regels', e);
+        }
+        try {
+            if (FEATURES.logWorkTimeSpentOnly) processLogWork();
+        } catch (e) {
+            console.debug(LOG_PREFIX, 'Fout bij Log Work in transitievenster', e);
         }
     }
 
@@ -710,6 +1235,7 @@
     }
 
     injectStyles();
+    const setSettingsOpen = createSettingsUi();
     new MutationObserver(mutations => {
         if (mutations.every(isOwnMutation)) return;
         scheduleRun();
@@ -742,13 +1268,21 @@
                 backlogRegelsGevonden: document.querySelectorAll(SELECTORS.backlogRow).length,
                 badgesOpPagina: document.querySelectorAll('.otcl-badges').length,
                 dividersOpPagina: document.querySelectorAll('.otcl-divider-overlay').length,
+                dueDateVeldenGevonden: document.querySelectorAll(SELECTORS.dueDate).length,
+                dueDateKaders: document.querySelectorAll(DUE_DATE_CLASSES.map(cls => '.' + cls).join(',') || 'none').length,
+                logWorkSectiesGevonden: document.querySelectorAll(SELECTORS.worklogSection).length,
                 ticketsInCache: Object.keys(cache).length,
                 inWachtrij: queue.size,
                 geopendTicket: lastSelectedIssue,
-                laatsteFout: lastError ? String(lastError.message || lastError) : null
+                componentenOvergenomen: inheritedCount,
+                laatsteFout: lastError ? String(lastError.message || lastError) : null,
+                instellingen: JSON.stringify(FEATURES)
             };
             console.table(info);
             return info;
+        },
+        settings() {
+            if (setSettingsOpen) setSettingsOpen(true);
         },
         clearCache() {
             cache = {};

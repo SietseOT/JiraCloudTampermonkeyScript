@@ -1,7 +1,7 @@
 # Jira Cloud – OT label badges (Tampermonkey)
 
 Een Tampermonkey-script voor Jira Cloud van OnderwijsTransparant (`onderwijstransparant.atlassian.net`).
-Het script past alleen de weergave aan en wijzigt nooit tickets.
+Het script past vooral de weergave aan. De enige wijziging die het aan tickets doet: een nieuwe subtaak krijgt de componenten van de parent (zie hieronder).
 
 ## Installeren (eenmalig)
 
@@ -26,7 +26,7 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
   | Label | Weergave |
   |---|---|
   | `deadline…` (bijv. `deadline:2026-10-12`) | 📅 Deadline 12-10-2026 (blauw, vóór de titel) |
-  | `overleg…` (bijv. `overleg:2026-10-13`) | 💬 Overleg 13-10-2026 (paars, vóór de titel) |
+  | `overleg…` met datum (bijv. `overleg:2026-10-13`) | 💬 Overleg 13-10-2026 (paars, vóór de titel) |
   | `hotfix` | 🔥 Hotfix (rood) |
   | `tijdskritisch` | ⏰ Tijdskritisch (oranje) |
   | `urgent` | rood gevuld |
@@ -37,7 +37,13 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
 
 - **Divider:** een ticket met het label `divider` wordt in de backlog een scheidingslijn met de titel in het midden. Je kunt de regel nog steeds slepen en aanklikken.
 - **Geflagde tickets** worden in de backlog geel, net als op het bord. Jira zelf kleurt ze in de backlog roze.
-- De labels `small`, `medium`, `large`, `geen-punten` en `onduidelijk-punten` worden niet als badge getoond.
+- **Due date met kader:** heeft een ticket een ingevulde due date én het label `overleg` (zonder datum erachter), dan krijgt het standaard due date-veld in de backlog een paars kader. Dat label zelf wordt niet als badge getoond. Zonder passend label blijft de normale opmaak. Meer label/kleur-combinaties zijn toe te voegen bij `DUE_DATE_RULES` bovenin het script.
+- De labels `small`, `medium`, `large`, `geen-punten`, `onduidelijk-punten` en `overleg` worden niet als badge getoond.
+- **Log Work bij statuswijziging:** heeft het venster bij een statuswijziging (bijv. *Respond to customer*, *Close Issue*, *Move to Test*) een sectie **Log Work**, dan staat die meteen open en zie je alleen het veld **Time Spent**. *Time Remaining*, *Date Started* en de uitlegtekst met link zijn verborgen; Jira vult die zelf met de standaardwaarden (resterende tijd automatisch, starttijd nu). Dit werkt overal waar het venster opent: ticketpagina, ticketpaneel, bord (ook bij slepen), lijst en zoekresultaten, en ook met een Nederlandse interface.
+- **Componenten overerven:** maak je in een geopend ticket (zijpaneel of volledig scherm) een subtaak aan, dan krijgt die subtaak automatisch dezelfde componenten als de parent (bijv. `OT Software`). Zo staat hij in dezelfde swimlane.
+  - Alleen voor subtaken die erbij komen terwijl de parent open staat en die hooguit 10 minuten oud zijn. Bestaande subtaken worden nooit aangepast.
+  - Componenten worden alleen toegevoegd, nooit weggehaald. Haal je daarna zelf een component weg, dan blijft dat zo.
+  - Werkt alleen bij wie het script heeft. Uitzetten kan via het tandwiel (zie hieronder).
 
 Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders zie je labels dubbel.
 
@@ -47,10 +53,17 @@ Tip: zet in de bordinstellingen (**Card layout**) het veld *Labels* uit, anders 
 2. Typ `otclLabels.status()` en druk op Enter.
    - Staat er bij *gevonden* een 0 terwijl je wel kaarten of regels ziet? Dan heeft Atlassian de pagina veranderd. Alle herkenningspunten (`SELECTORS`) staan bovenin het script bij elkaar en zijn daar aan te passen.
    - Staat er iets bij *laatsteFout*? Dan gaat het ophalen bij Jira mis.
+   - Klapt *Log Work* niet meer vanzelf open? Typ `otclLabels.status()` terwijl het statusvenster openstaat. Is *logWorkSectiesGevonden* 0, dan heeft Atlassian het venster veranderd (selectors `worklog…` in `SELECTORS`).
    - Bestaat `otclLabels` niet? Dan draait het script niet. Controleer in Tampermonkey of het aan staat.
 3. Labels verouderd? Typ `otclLabels.clearCache()`.
 
-Onderdelen zijn uit te zetten bovenin het script bij `FEATURES`.
+## Onderdelen aan- of uitzetten
+
+Rechtsonder in Jira staat een **tandwiel** (⚙). Klik erop om onderdelen aan of uit te zetten; bij elke optie staat wat die doet.
+Je keuze geldt alleen voor jou, in deze browser, en blijft bewaard bij updates. Met **Standaard herstellen** zet je alles terug.
+Het venster is ook te openen vanuit de console met `otclLabels.settings()`.
+
+De standaardwaarden voor iedereen staan bovenin het script bij `DEFAULT_FEATURES`.
 
 ## Voor beheerders: een nieuwe versie uitbrengen
 
