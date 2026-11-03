@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.7.1
+// @version      1.7.2
 // @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent. Bug-knop in een geopend ticket maakt een gekoppelde OT-bug met sjabloon.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
@@ -18,7 +18,7 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.7.1';
+    const SCRIPT_VERSION = '1.7.2';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
@@ -89,7 +89,7 @@
         {
             key: 'bugButton',
             title: 'Bug-knop in geopend ticket',
-            help: 'Rechtsboven in een geopend ticket (niet in space OT) staat een knop "Bug". Die opent "Create linked work item" met space OT, type Bug, component Incident Producten en het bug-sjabloon in de beschrijving, inclusief de schoolgegevens uit het ticket. De samenvatting begint met regio en product (bijv. "MHR - POVO - ") en het veld Region krijgt de space van die regio. Je controleert alles en klikt zelf op Create.'
+            help: 'Rechtsboven in een geopend ticket (niet in space OT) staat een knop "Bug". Die opent "Create linked work item" met space OT, type Bug, component Incident Producten en het bug-sjabloon in de beschrijving, inclusief de schoolgegevens uit het ticket. De samenvatting begint met de space van het ticket als regio en het product (bijv. "MHR - POVO - ") en het veld Region krijgt die space. Je controleert alles en klikt zelf op Create.'
         }
     ];
 
@@ -817,11 +817,10 @@
     const USER_DATA_FIELDS = ['Rolnaam', 'Organisatie ID', 'School ID', 'Schoolnaam', 'Schoolsoort',
         'Locatie', 'BrinCode', 'Adres', 'Schooljaar'];
 
-    // Begin van de samenvatting: "<regiocode> - <product> - ". De regiocode is het eerste
-    // stuk van de samenvatting van het ticket ("MHR - Midden Holland ..."), anders van de
-    // Schoolnaam. Het product is het eerste van deze woorden dat als los woord in de
-    // samenvatting of de Rolnaam staat. Niet gevonden = weggelaten, nooit gegokt.
-    const REGION_CODE_PATTERN = /^\s*([A-Z][A-Z0-9]{1,7})\s+-\s/;
+    // Begin van de samenvatting: "<regiocode> - <product> - ". De regiocode is de sleutel
+    // van de space van het geopende ticket (ROT-1445 → "ROT"). Het product is het eerste
+    // van deze woorden dat als los woord in de samenvatting of de Rolnaam staat.
+    // Niet gevonden = weggelaten, nooit gegokt.
     const BUG_PRODUCTS = ['POVO', '1Loket', 'RWO'];
 
     // Het sjabloon: kopjes met daaronder ruimte om te typen. bold = vetgedrukt kopje,
@@ -1100,30 +1099,29 @@
     }
 
     /**
-     * Haalt samenvatting en beschrijving van het ticket op en geeft
+     * Haalt space, samenvatting en beschrijving van het ticket op en geeft
      * { userData: [{ name, value }], summaryPrefix: 'MHR - POVO - ', regionCode: 'MHR' }.
      */
     async function fetchSourceData(key) {
-        const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=summary,description`, {
+        const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=project,summary,description`, {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         });
         if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
         const { fields } = await response.json();
         const userData = readUserData(adfToText(fields && fields.description));
-        const summary = (fields && fields.summary) || '';
-        const { regionCode, product } = readRegionAndProduct(summary, userData);
+        // De space volgens Jira (klopt ook als het ticket verplaatst is en de oude sleutel in de adresbalk staat)
+        const regionCode = (fields && fields.project && fields.project.key) || key.split('-')[0];
+        const product = readProduct((fields && fields.summary) || '', userData);
         const parts = [regionCode, product].filter(Boolean);
         return { userData, summaryPrefix: parts.length ? `${parts.join(' - ')} - ` : '', regionCode };
     }
 
-    /** Regiocode en product uit de samenvatting en Rolnaam/Schoolnaam ('' als niet gevonden). */
-    function readRegionAndProduct(summary, userData) {
-        const value = name => (userData.find(item => item.name === name) || {}).value || '';
-        const regionMatch = summary.match(REGION_CODE_PATTERN) || value('Schoolnaam').match(REGION_CODE_PATTERN);
-        const searchIn = `${summary}\n${value('Rolnaam')}`;
-        const product = BUG_PRODUCTS.find(name => new RegExp(`(^|[^\\w])${name}(?![\\w])`, 'i').test(searchIn));
-        return { regionCode: regionMatch ? regionMatch[1] : '', product: product || '' };
+    /** Product uit de samenvatting of de Rolnaam ('' als niet gevonden). */
+    function readProduct(summary, userData) {
+        const rolnaam = (userData.find(item => item.name === 'Rolnaam') || {}).value || '';
+        const searchIn = `${summary}\n${rolnaam}`;
+        return BUG_PRODUCTS.find(name => new RegExp(`(^|[^\\w])${name}(?![\\w])`, 'i').test(searchIn)) || '';
     }
 
     /** Haalt de regels uit USER_DATA_FIELDS uit de tekst van de beschrijving: [{ name, value }]. */
