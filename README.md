@@ -45,7 +45,7 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
   - Componenten worden alleen toegevoegd, nooit weggehaald. Haal je daarna zelf een component weg, dan blijft dat zo.
   - Werkt alleen bij wie het script heeft. Uitzetten kan via het tandwiel (zie hieronder).
 - **Bug-knop:** rechtsboven in een geopend ticket (naast het oogje om te volgen) staat een knop **🐞 Bug**. Niet bij tickets in space OT zelf; daar maak je een bug gewoon direct aan. Die opent Jira's eigen venster *Create linked work item* en vult vooraf in:
-  - space **OT**, type **Bug** en component **Incident Software**;
+  - space **OT**, type **Bug** en component **Incident Producten**;
   - in de beschrijving het bug-sjabloon (*Probleem/gebruikersvraag*, *DL's*, *Gegevens gebruiker/organisatie/leerling*, *Vraag afkomstig van gebruiker of klant*, *De gebruiker heeft de volgende stappen doorlopen*, *SD heeft gecheckt*, *SD verwacht*, *SD vraag*);
   - onder *Gegevens gebruiker/organisatie/leerling* de regels *Rolnaam*, *Organisatie ID*, *School ID*, *Schoolnaam*, *Schoolsoort*, *Locatie*, *BrinCode*, *Adres* en *Schooljaar* uit de beschrijving van het geopende ticket, als die erin staan. Andere regels worden niet overgenomen;
   - de samenvatting begint met **regio** en **product** (bijv. `MHR - POVO - `), met de cursor erachter. De regio is de code vooraan de samenvatting van het ticket (`MHR - Midden Holland …`), anders vooraan de *Schoolnaam*. Het product is POVO, 1Loket of RWO, als dat als los woord in de samenvatting of de *Rolnaam* staat. Wat niet gevonden wordt, wordt weggelaten (bijv. alleen `MHR - `);
