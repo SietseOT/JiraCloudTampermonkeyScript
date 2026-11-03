@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.6.0
-// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent.
+// @version      1.7.0
+// @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent. Bug-knop in een geopend ticket maakt een gekoppelde OT-bug met sjabloon.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
 // @grant        none
@@ -18,7 +18,7 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.6.0';
+    const SCRIPT_VERSION = '1.7.0';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
@@ -35,7 +35,8 @@
         flaggedYellow: true,     // geflagd ticket in de backlog geel i.p.v. roze (zoals Jira het op het bord al doet)
         dueDateColors: true,     // kader om het due date-veld in de backlog op basis van labels (zie DUE_DATE_RULES)
         logWorkTimeSpentOnly: true, // transitievenster: "Log Work" direct open, alleen Time Spent zichtbaar
-        inheritComponents: true  // nieuwe subtaak krijgt de componenten van de parent (wijzigt het ticket!)
+        inheritComponents: true, // nieuwe subtaak krijgt de componenten van de parent (wijzigt het ticket!)
+        bugButton: true          // knop "Bug" rechtsboven in een geopend ticket: gekoppelde OT-bug met sjabloon
     };
 
     // Teksten in het instellingenvenster (volgorde = volgorde in het venster)
@@ -84,6 +85,11 @@
             key: 'inheritComponents',
             title: 'Subtaken erven componenten',
             help: 'Maak je in een geopend ticket een subtaak aan, dan krijgt die dezelfde componenten als de parent (bijv. OT Software), zodat hij in dezelfde swimlane staat. Let op: dit past het ticket in Jira aan.'
+        },
+        {
+            key: 'bugButton',
+            title: 'Bug-knop in geopend ticket',
+            help: 'Rechtsboven in een geopend ticket (niet in space OT) staat een knop "Bug". Die opent "Create linked work item" met space OT, type Bug, component Incident Software en het bug-sjabloon in de beschrijving, inclusief de schoolgegevens uit het ticket. De samenvatting begint met regio en product (bijv. "MHR - POVO - ") en het veld Region krijgt de space van die regio. Je controleert alles en klikt zelf op Create.'
         }
     ];
 
@@ -161,7 +167,21 @@
         worklogTimeRemaining: '[data-testid$="log-work-time-remaining"]',
         worklogDateStarted: '[data-testid$="log-work-date-field"]',
         // Link "Learn about logging work"; het blok eromheen bevat ook de uitlegtekst
-        worklogHelpLink: 'a[href*="TimeTrackingHelp"]'
+        worklogHelpLink: 'a[href*="TimeTrackingHelp"]',
+
+        // Geopend ticket: knoppenrij rechtsboven (volgen, delen, "..."). De Bug-knop komt vóór de volgknop.
+        issueWatchButton: '[data-testid="issue.watchers.action-button.root"]',
+        issueMeatballButton: '[data-testid="issue-meatball-menu.ui.dropdown-trigger.button"]',
+        // Gekoppeld ticket aanmaken: "+" onder de titel → "Link work item" → "Create linked work item"
+        quickAddButton: '[data-testid="issue-view-foundation.quick-add.quick-add-items-compact.add-button-dropdown--trigger"]',
+        quickAddLinkItem: '[data-testid="issue.issue-view.views.issue-base.foundation.quick-add.quick-add-item.link-issue"]',
+        createLinkedButton: '[data-testid="issue.views.issue-base.content.issue-links.add.create-linked-issue-button.create-linked-issue-button"]',
+        // Venster "Create New Work Item": in de kop eerst de knop voor de space, dan die voor het type
+        createModalHeader: '[data-testid="minimizable-modal.ui.modal-container.modal--header"]',
+        createModalPickers: 'button[aria-haspopup]',
+        createModalTab: '[role="tab"]',
+        createField: name => `[data-testid="issue-create-modernised.field-renderer.field.${name}"]`,
+        richTextEditor: '.ProseMirror[contenteditable="true"]'
     };
 
     const API = {
@@ -618,7 +638,7 @@
 
     /** Haalt alles weg wat het script aan de pagina heeft toegevoegd (behalve het tandwiel). */
     function clearPage() {
-        document.querySelectorAll('.otcl-badges, .otcl-divider-overlay').forEach(el => el.remove());
+        document.querySelectorAll('.otcl-badges, .otcl-divider-overlay, .otcl-bug-button').forEach(el => el.remove());
         ['otcl-card-on-hold', 'otcl-native-hidden', 'otcl-flagged', 'otcl-divider-host', 'otcl-worklog', 'otcl-worklog-hidden', ...DUE_DATE_CLASSES].forEach(cls => {
             document.querySelectorAll(`.${cls}`).forEach(el => {
                 if (!el.closest('.otcl-settings-panel')) el.classList.remove(cls); // legenda laten staan
@@ -776,6 +796,340 @@
             overlay.dataset.otclKey = key;
             overlay.firstChild.textContent = text;
         }
+    }
+
+    // =====================================================================
+    // BUG-KNOP: rechtsboven in een geopend ticket. Opent Jira's eigen venster
+    // "Create linked work item" en vult space, type, component en een
+    // sjabloon in de beschrijving. Het script klikt nooit op Create: je
+    // controleert alles en maakt de bug zelf aan.
+    // =====================================================================
+    const BUG_PROJECT_KEY = 'OT';
+    const BUG_ISSUE_TYPE = 'Bug';
+    const BUG_COMPONENT = 'Incident Software';
+    // Veld "Region" (keuze uit spaces) in OT; krijgt de space met de regiocode.
+    // Het ID is per Jira-omgeving vast; opzoeken via /rest/api/3/field als het ooit verandert.
+    const BUG_REGION_FIELD = 'customfield_10132';
+    const STEP_TIMEOUT = 10 * 1000;   // per stap hooguit 10 seconden wachten op Jira
+
+    // Regels uit de beschrijving van het geopende ticket die in het sjabloon komen
+    // (bijv. "Schoolnaam:<tab>MHR - ..."), in deze volgorde. Andere regels niet.
+    const USER_DATA_FIELDS = ['Rolnaam', 'Organisatie ID', 'School ID', 'Schoolnaam', 'Schoolsoort',
+        'Locatie', 'BrinCode', 'Adres', 'Schooljaar'];
+
+    // Begin van de samenvatting: "<regiocode> - <product> - ". De regiocode is het eerste
+    // stuk van de samenvatting van het ticket ("MHR - Midden Holland ..."), anders van de
+    // Schoolnaam. Het product is het eerste van deze woorden dat als los woord in de
+    // samenvatting of de Rolnaam staat. Niet gevonden = weggelaten, nooit gegokt.
+    const REGION_CODE_PATTERN = /^\s*([A-Z][A-Z0-9]{1,7})\s+-\s/;
+    const BUG_PRODUCTS = ['POVO', '1Loket', 'RWO'];
+
+    // Het sjabloon: kopjes met daaronder ruimte om te typen. bold = vetgedrukt kopje,
+    // userData = hier komen de gegevens uit het ticket.
+    const BUG_TEMPLATE = [
+        { heading: 'Probleem/gebruikersvraag:', bold: false },
+        { heading: 'DL’s:', bold: true },
+        { heading: 'Gegevens gebruiker/organisatie/leerling:', bold: true, userData: true },
+        { heading: 'Vraag afkomstig van gebruiker of klant:', bold: true },
+        { heading: 'De gebruiker heeft de volgende stappen doorlopen:', bold: true },
+        { heading: 'SD heeft gecheckt:', bold: true },
+        { heading: 'SD verwacht:', bold: true },
+        { heading: 'SD vraag:', bold: true }
+    ];
+
+    let bugFlowRunning = false;
+
+    function processBugButton() {
+        const meatball = document.querySelector(SELECTORS.issueMeatballButton);
+        const watch = document.querySelector(SELECTORS.issueWatchButton);
+        let toolbar = meatball && meatball.parentElement;
+        while (toolbar && watch && !toolbar.contains(watch)) toolbar = toolbar.parentElement;
+        const before = toolbar && watch && closestChildOf(toolbar, watch);
+        const existing = document.querySelector('.otcl-bug-button');
+        const key = getSelectedIssue();
+        // Niet in tickets van OT zelf: daar maak je de bug direct aan
+        if (!before || !key || key.startsWith(`${BUG_PROJECT_KEY}-`)) {
+            if (existing) existing.remove();
+            return;
+        }
+        if (existing && existing.nextSibling === before) return;
+        const button = existing || createBugButton();
+        toolbar.insertBefore(button, before);
+    }
+
+    function createBugButton() {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'otcl-bug-button';
+        button.title = `Gekoppelde bug aanmaken in ${BUG_PROJECT_KEY} (met sjabloon)`;
+        button.textContent = '🐞 Bug';
+        button.addEventListener('click', () => startBugFlow(button));
+        return button;
+    }
+
+    async function startBugFlow(button) {
+        const key = getSelectedIssue();
+        if (bugFlowRunning || !key) return;
+        bugFlowRunning = true;
+        button.disabled = true;
+        button.textContent = '🐞 Bezig…';
+        try {
+            // Alvast ophalen terwijl het venster opent
+            const sourceData = fetchSourceData(key).catch(err => {
+                console.warn(LOG_PREFIX, `Gegevens van ${key} ophalen mislukt`, err);
+                return { userData: [], summaryPrefix: '', regionCode: '' };
+            });
+            await openCreateLinkedDialog();
+            await selectFromHeaderMenu(0, item => item.textContent.trim().endsWith(`(${BUG_PROJECT_KEY})`), BUG_PROJECT_KEY);
+            await selectFromHeaderMenu(1, item => item.textContent.trim() === BUG_ISSUE_TYPE, BUG_ISSUE_TYPE);
+            if (!await selectOption('components', text => text.toLowerCase() === BUG_COMPONENT.toLowerCase(), 'Components')) {
+                throw new Error(`component ${BUG_COMPONENT} niet gevonden`);
+            }
+            const { userData, summaryPrefix, regionCode } = await sourceData;
+            await selectRegion(regionCode);
+            await fillDescription(buildBugHtml(userData));
+            // Als laatste: daarna staat de cursor in de samenvatting, achter het voorvoegsel
+            await fillSummary(summaryPrefix);
+            button.textContent = '🐞 Bug';
+        } catch (err) {
+            console.warn(LOG_PREFIX, 'Bug aanmaken: invullen mislukt', err);
+            button.textContent = '🐞 Mislukt';
+            button.title = `Invullen mislukt: ${err.message}. Vul de rest zelf in.`;
+            setTimeout(() => {
+                button.textContent = '🐞 Bug';
+                button.title = `Gekoppelde bug aanmaken in ${BUG_PROJECT_KEY} (met sjabloon)`;
+            }, 4000);
+        } finally {
+            bugFlowRunning = false;
+            button.disabled = false;
+        }
+    }
+
+    /** Wacht tot fn() iets teruggeeft (of gooit een fout na STEP_TIMEOUT). */
+    async function waitFor(fn, what) {
+        const until = Date.now() + STEP_TIMEOUT;
+        while (Date.now() < until) {
+            const result = fn();
+            if (result) return result;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        throw new Error(`${what} niet gevonden`);
+    }
+
+    function visible(selector, root) {
+        return Array.from((root || document).querySelectorAll(selector)).find(el => el.offsetParent) || null;
+    }
+
+    function createModal() {
+        const header = visible(SELECTORS.createModalHeader);
+        return header && header.closest('[role="dialog"]');
+    }
+
+    async function openCreateLinkedDialog() {
+        if (createModal()) throw new Error('er staat al een venster "Create" open');
+        let createLinked = visible(SELECTORS.createLinkedButton);
+        if (!createLinked) {
+            (await waitFor(() => visible(SELECTORS.quickAddButton), 'knop "+" onder de titel')).click();
+            (await waitFor(() => visible(SELECTORS.quickAddLinkItem), 'menu-item "Link work item"')).click();
+            createLinked = await waitFor(() => visible(SELECTORS.createLinkedButton), 'knop "Create linked work item"');
+        }
+        createLinked.click();
+        await waitFor(() => createModal() && createModal().querySelector(SELECTORS.createField('description')), 'venster "Create"');
+    }
+
+    /**
+     * Kiest in de kop van het venster (0 = space, 1 = type) het menu-item waarvoor
+     * match() klopt. De knop toont daarna precies `shown` (bijv. "OT" of "Bug").
+     */
+    async function selectFromHeaderMenu(index, match, shown) {
+        const picker = () => {
+            const modal = createModal();
+            const header = modal && modal.querySelector(SELECTORS.createModalHeader);
+            return header && header.querySelectorAll(SELECTORS.createModalPickers)[index];
+        };
+        const button = await waitFor(picker, `keuzeknop ${shown}`);
+        if (button.textContent.trim() === shown) return; // staat al goed
+        button.click();
+        const item = await waitFor(() => {
+            const menu = visible('[role="menu"]');
+            return menu && Array.from(menu.querySelectorAll('[role="menuitem"]')).find(match);
+        }, shown);
+        item.click();
+        // Na het wisselen bouwt Jira het formulier opnieuw op
+        await waitFor(() => {
+            const current = picker();
+            return current && current.textContent.trim() === shown
+                && createModal().querySelector(SELECTORS.createField('description'));
+        }, `${shown} gekozen`);
+    }
+
+    /**
+     * Kiest in keuzeveld `fieldName` (bijv. "components") de optie waarvan de tekst
+     * match() doet. Staat het veld op een ander tabblad van het venster (General/Details),
+     * dan wordt dat tabblad eerst geopend. Geeft false als de optie niet bestaat.
+     */
+    async function selectOption(fieldName, match, what) {
+        const field = await waitFor(() => createModal().querySelector(SELECTORS.createField(fieldName)), `veld ${what}`);
+        await showTabWith(field, what);
+        const chosen = Array.from(field.querySelectorAll('*'))
+            .some(el => !el.children.length && match(el.textContent.trim()) && !el.closest('[role="option"]'));
+        if (chosen) return true;
+        // Sommige velden tonen eerst alleen de waarde; klikken maakt er een invoerveld van
+        if (!field.querySelector('input')) field.querySelector('[role="button"]').click();
+        const input = await waitFor(() => field.querySelector('input'), `invoer ${what}`);
+        input.focus();
+        if (!field.querySelector('[role="option"]')) {
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        }
+        // De lijst kan in delen binnenkomen (eerst "laden" of recente keuzes): wachten op de juiste optie
+        const option = await waitFor(() => Array.from(field.querySelectorAll('[role="option"]'))
+            .find(el => match(el.textContent.trim())), `optie ${what}`).catch(() => null);
+        if (option) option.click();
+        input.blur();
+        return Boolean(option);
+    }
+
+    /** Opent het tabblad van het venster (General/Details) waarop `field` staat. */
+    async function showTabWith(field, what) {
+        for (const tab of createModal().querySelectorAll(SELECTORS.createModalTab)) {
+            if (field.offsetParent) return;
+            tab.click();
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        if (!field.offsetParent) throw new Error(`veld ${what} niet zichtbaar`);
+    }
+
+    /**
+     * Zet het veld Region op de space met de regiocode (bijv. "Midden Holland & Rijnstreek (MHR)").
+     * Geen code, geen passende space of geen veld: niets invullen, de rest gaat gewoon door.
+     */
+    async function selectRegion(code) {
+        try {
+            if (!code || !createModal().querySelector(SELECTORS.createField(BUG_REGION_FIELD))) return;
+            const found = await selectOption(BUG_REGION_FIELD, text => text.endsWith(`(${code})`), 'Region');
+            if (!found) console.info(LOG_PREFIX, `Region: geen space met code ${code}`);
+        } catch (err) {
+            console.warn(LOG_PREFIX, 'Region invullen mislukt', err);
+        } finally {
+            // Terug naar het eerste tabblad (General), waar de samenvatting staat
+            const firstTab = createModal() && createModal().querySelector(SELECTORS.createModalTab);
+            if (firstTab && firstTab.getAttribute('aria-selected') !== 'true') firstTab.click();
+        }
+    }
+
+    async function fillDescription(html) {
+        const field = createModal().querySelector(SELECTORS.createField('description'));
+        let editor = field.querySelector(SELECTORS.richTextEditor);
+        if (!editor) {
+            const placeholder = field.querySelector('[role="button"], button');
+            if (placeholder) placeholder.click();
+            editor = await waitFor(() => field.querySelector(SELECTORS.richTextEditor), 'beschrijving');
+        }
+        // Al iets ingetypt? Dan niets overschrijven. De grijze voorbeeldtekst
+        // ("Add a description…") is een niet-bewerkbaar blokje en telt niet mee.
+        const typed = editor.cloneNode(true);
+        typed.querySelectorAll('[contenteditable="false"]').forEach(el => el.remove());
+        if (typed.textContent.trim()) return;
+        editor.focus();
+        // Plakken als HTML: de editor zet dat zelf om naar Jira-opmaak (vet, regels)
+        const data = new DataTransfer();
+        data.setData('text/html', html);
+        const plain = new DOMParser().parseFromString(html.replace(/<br>|<\/p>/g, '\n'), 'text/html').body.textContent;
+        data.setData('text/plain', plain);
+        editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }
+
+    /** Zet `prefix` in het (lege) veld Summary en zet de cursor erachter. */
+    async function fillSummary(prefix) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        // Afhankelijk van de space een tekstvak (textarea) of een invoerregel (input)
+        const input = createModal().querySelector(`${SELECTORS.createField('summary')} textarea, ${SELECTORS.createField('summary')} input`);
+        if (!input || !prefix || input.value.trim()) return;
+        // Jira's invoerveld is van React: via de originele setter + input-event ziet React de waarde
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value').set.call(input, prefix);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        const focusSummary = () => {
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
+        };
+        focusSummary();
+        // De beschrijving pakt na het plakken soms nog even later de focus terug; dan
+        // de cursor terugzetten. Alleen in de eerste anderhalve seconde en alleen als de
+        // focus naar de beschrijving ging (niet als je zelf ergens anders klikt).
+        const description = createModal().querySelector(SELECTORS.createField('description'));
+        const until = Date.now() + 1500;
+        while (Date.now() < until) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            if (description && description.contains(document.activeElement)) focusSummary();
+        }
+    }
+
+    /**
+     * Haalt samenvatting en beschrijving van het ticket op en geeft
+     * { userData: [{ name, value }], summaryPrefix: 'MHR - POVO - ', regionCode: 'MHR' }.
+     */
+    async function fetchSourceData(key) {
+        const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=summary,description`, {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
+        const { fields } = await response.json();
+        const userData = readUserData(adfToText(fields && fields.description));
+        const summary = (fields && fields.summary) || '';
+        const { regionCode, product } = readRegionAndProduct(summary, userData);
+        const parts = [regionCode, product].filter(Boolean);
+        return { userData, summaryPrefix: parts.length ? `${parts.join(' - ')} - ` : '', regionCode };
+    }
+
+    /** Regiocode en product uit de samenvatting en Rolnaam/Schoolnaam ('' als niet gevonden). */
+    function readRegionAndProduct(summary, userData) {
+        const value = name => (userData.find(item => item.name === name) || {}).value || '';
+        const regionMatch = summary.match(REGION_CODE_PATTERN) || value('Schoolnaam').match(REGION_CODE_PATTERN);
+        const searchIn = `${summary}\n${value('Rolnaam')}`;
+        const product = BUG_PRODUCTS.find(name => new RegExp(`(^|[^\\w])${name}(?![\\w])`, 'i').test(searchIn));
+        return { regionCode: regionMatch ? regionMatch[1] : '', product: product || '' };
+    }
+
+    /** Haalt de regels uit USER_DATA_FIELDS uit de tekst van de beschrijving: [{ name, value }]. */
+    function readUserData(text) {
+        const lines = text.split('\n');
+        const found = [];
+        USER_DATA_FIELDS.forEach(name => {
+            const pattern = new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*(.*\\S)\\s*$`, 'i');
+            for (const line of lines) {
+                const match = line.match(pattern);
+                if (match) {
+                    found.push({ name, value: match[1] });
+                    break;
+                }
+            }
+        });
+        return found;
+    }
+
+    /** Platte tekst uit Jira's beschrijving (ADF); elke regel en alinea op een eigen regel. */
+    function adfToText(node) {
+        if (!node) return '';
+        if (node.type === 'text') return node.text || '';
+        if (node.type === 'hardBreak') return '\n';
+        const inner = (node.content || []).map(adfToText).join('');
+        return ['paragraph', 'heading', 'listItem', 'codeBlock'].includes(node.type) ? `${inner}\n` : inner;
+    }
+
+    function escapeHtml(text) {
+        return text.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+    }
+
+    function buildBugHtml(userData) {
+        return BUG_TEMPLATE.map(section => {
+            const heading = escapeHtml(section.heading);
+            let html = `<p>${section.bold ? `<strong>${heading}</strong>` : heading}</p>`;
+            if (section.userData && userData.length) {
+                html += `<p>${userData.map(item => `${escapeHtml(item.name)}: ${escapeHtml(item.value)}`).join('<br>')}</p>`;
+            }
+            return `${html}<p></p>`;
+        }).join('');
     }
 
     // =====================================================================
@@ -1114,6 +1468,32 @@
                 background-color: var(--ds-background-warning-hovered, #ffe2a8) !important;
             }
 
+            /* Bug-knop in de knoppenrij rechtsboven van een geopend ticket */
+            .otcl-bug-button {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                box-sizing: border-box;
+                height: 32px;
+                margin-right: 4px;
+                padding: 0 10px;
+                border: 1px solid var(--ds-border, #091e4224);
+                border-radius: 6px;
+                background: var(--ds-background-neutral-subtle, transparent);
+                color: var(--ds-text-subtle, #44546f);
+                font: inherit;
+                font-size: 14px;
+                font-weight: 500;
+                white-space: nowrap;
+                cursor: pointer;
+            }
+            .otcl-bug-button:hover { background: var(--ds-background-neutral-subtle-hovered, #091e420f); }
+            .otcl-bug-button:disabled { cursor: progress; opacity: 0.7; }
+            .otcl-bug-button:focus-visible {
+                outline: 2px solid var(--ds-border-focused, #388bff);
+                outline-offset: 2px;
+            }
+
             /* Transitievenster: onderdelen van "Log Work" verbergen (blijven in het formulier) */
             .otcl-worklog .otcl-worklog-hidden { display: none !important; }
 
@@ -1374,6 +1754,11 @@
         } catch (e) {
             console.debug(LOG_PREFIX, 'Fout bij Log Work in transitievenster', e);
         }
+        try {
+            if (FEATURES.bugButton) processBugButton();
+        } catch (e) {
+            console.debug(LOG_PREFIX, 'Fout bij Bug-knop', e);
+        }
     }
 
     let runTimer = null;
@@ -1436,6 +1821,7 @@
                 inWachtrij: queue.size,
                 geopendTicket: lastSelectedIssue,
                 componentenOvergenomen: inheritedCount,
+                bugKnopOpPagina: document.querySelectorAll('.otcl-bug-button').length,
                 laatsteFout: lastError ? String(lastError.message || lastError) : null,
                 instellingen: JSON.stringify(FEATURES)
             };

@@ -1,7 +1,7 @@
 # Jira Cloud – OT label badges (Tampermonkey)
 
 Een Tampermonkey-script voor Jira Cloud van OnderwijsTransparant (`onderwijstransparant.atlassian.net`).
-Het script past vooral de weergave aan. De enige wijziging die het aan tickets doet: een nieuwe subtaak krijgt de componenten van de parent (zie hieronder).
+Het script past vooral de weergave aan. De enige wijziging die het zelf aan tickets doet: een nieuwe subtaak krijgt de componenten van de parent (zie hieronder). De Bug-knop vult alleen een venster voor; aanmaken doe je zelf.
 
 ## Installeren (eenmalig)
 
@@ -44,6 +44,13 @@ Meteen bijwerken: klik op het Tampermonkey-icoon → **Controleren op updates va
   - Alleen voor subtaken die erbij komen terwijl de parent open staat en die hooguit 10 minuten oud zijn. Bestaande subtaken worden nooit aangepast.
   - Componenten worden alleen toegevoegd, nooit weggehaald. Haal je daarna zelf een component weg, dan blijft dat zo.
   - Werkt alleen bij wie het script heeft. Uitzetten kan via het tandwiel (zie hieronder).
+- **Bug-knop:** rechtsboven in een geopend ticket (naast het oogje om te volgen) staat een knop **🐞 Bug**. Niet bij tickets in space OT zelf; daar maak je een bug gewoon direct aan. Die opent Jira's eigen venster *Create linked work item* en vult vooraf in:
+  - space **OT**, type **Bug** en component **Incident Software**;
+  - in de beschrijving het bug-sjabloon (*Probleem/gebruikersvraag*, *DL's*, *Gegevens gebruiker/organisatie/leerling*, *Vraag afkomstig van gebruiker of klant*, *De gebruiker heeft de volgende stappen doorlopen*, *SD heeft gecheckt*, *SD verwacht*, *SD vraag*);
+  - onder *Gegevens gebruiker/organisatie/leerling* de regels *Rolnaam*, *Organisatie ID*, *School ID*, *Schoolnaam*, *Schoolsoort*, *Locatie*, *BrinCode*, *Adres* en *Schooljaar* uit de beschrijving van het geopende ticket, als die erin staan. Andere regels worden niet overgenomen;
+  - de samenvatting begint met **regio** en **product** (bijv. `MHR - POVO - `), met de cursor erachter. De regio is de code vooraan de samenvatting van het ticket (`MHR - Midden Holland …`), anders vooraan de *Schoolnaam*. Het product is POVO, 1Loket of RWO, als dat als los woord in de samenvatting of de *Rolnaam* staat. Wat niet gevonden wordt, wordt weggelaten (bijv. alleen `MHR - `);
+  - op het tabblad *Details* het veld **Region**: de space met dezelfde code, bijv. *Midden Holland & Rijnstreek (MHR)*. Geen regiocode of geen space met die code: Region blijft leeg.
+  - Het script klikt nooit zelf op **Create**: je maakt de samenvatting af, vult de rest aan en maakt de bug zelf aan. Lukt een stap niet (bijv. na een Jira-update), dan toont de knop even *Mislukt* en vul je de rest zelf in.
 
 Toont Jira op de bordkaarten zelf ook labels (veld *Labels* in **Card layout**), dan verbergt het script die en toont het alleen zijn eigen badges met de juiste opmaak.
 
