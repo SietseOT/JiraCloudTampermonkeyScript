@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.7.2
+// @version      1.7.3
 // @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent. Bug-knop in een geopend ticket maakt een gekoppelde OT-bug met sjabloon.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
@@ -18,7 +18,7 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.7.2';
+    const SCRIPT_VERSION = '1.7.3';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
@@ -89,7 +89,7 @@
         {
             key: 'bugButton',
             title: 'Bug-knop in geopend ticket',
-            help: 'Rechtsboven in een geopend ticket (niet in space OT) staat een knop "Bug". Die opent "Create linked work item" met space OT, type Bug, component Incident Producten en het bug-sjabloon in de beschrijving, inclusief de schoolgegevens uit het ticket. De samenvatting begint met de space van het ticket als regio en het product (bijv. "MHR - POVO - ") en het veld Region krijgt die space. Je controleert alles en klikt zelf op Create.'
+            help: 'Rechtsboven in een geopend ticket (niet in space OT) staat een knop "Bug". Die opent "Create linked work item" met space OT, type Bug, component Incident Producten en het bug-sjabloon in de beschrijving, inclusief de gebruikers- en schoolgegevens uit de beschrijving en Internal notes van het ticket. De samenvatting begint met de space van het ticket als regio en het product (bijv. "MHR - POVO - ") en het veld Region krijgt die space. Je controleert alles en klikt zelf op Create.'
         }
     ];
 
@@ -812,10 +812,13 @@
     const BUG_REGION_FIELD = 'customfield_10132';
     const STEP_TIMEOUT = 10 * 1000;   // per stap hooguit 10 seconden wachten op Jira
 
-    // Regels uit de beschrijving van het geopende ticket die in het sjabloon komen
-    // (bijv. "Schoolnaam:<tab>MHR - ..."), in deze volgorde. Andere regels niet.
-    const USER_DATA_FIELDS = ['Rolnaam', 'Organisatie ID', 'School ID', 'Schoolnaam', 'Schoolsoort',
-        'Locatie', 'BrinCode', 'Adres', 'Schooljaar'];
+    // Regels die onder "Gegevens gebruiker/organisatie/leerling" komen, in deze volgorde.
+    // Gezocht in de beschrijving en de Internal notes van het geopende ticket
+    // (bijv. "Schoolnaam:<tab>MHR - ..."). Niet gevonden = regel met lege waarde.
+    const USER_DATA_FIELDS = ['UserId', 'Gebruikersnaam', 'E-mailadres', 'Rolnaam', 'Organisatie ID',
+        'School ID', 'Schoolnaam', 'Schoolsoort', 'Locatie', 'BrinCode', 'Schooljaar'];
+    // Veld "Internal notes" (rich text). Het ID is per Jira-omgeving vast.
+    const INTERNAL_NOTES_FIELD = 'customfield_10061';
 
     // Begin van de samenvatting: "<regiocode> - <product> - ". De regiocode is de sleutel
     // van de space van het geopende ticket (ROT-1445 → "ROT"). Het product is het eerste
@@ -1099,17 +1102,18 @@
     }
 
     /**
-     * Haalt space, samenvatting en beschrijving van het ticket op en geeft
+     * Haalt space, samenvatting, beschrijving en Internal notes van het ticket op en geeft
      * { userData: [{ name, value }], summaryPrefix: 'MHR - POVO - ', regionCode: 'MHR' }.
      */
     async function fetchSourceData(key) {
-        const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=project,summary,description`, {
+        const response = await fetch(`${API.issue}${encodeURIComponent(key)}?fields=project,summary,description,${INTERNAL_NOTES_FIELD}`, {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         });
         if (!response.ok) throw new Error(`Jira API gaf status ${response.status}`);
         const { fields } = await response.json();
-        const userData = readUserData(adfToText(fields && fields.description));
+        // Eerst de beschrijving, dan de Internal notes: staat een regel in beide, dan telt de beschrijving
+        const userData = readUserData(`${adfToText(fields && fields.description)}\n${adfToText(fields && fields[INTERNAL_NOTES_FIELD])}`);
         // De space volgens Jira (klopt ook als het ticket verplaatst is en de oude sleutel in de adresbalk staat)
         const regionCode = (fields && fields.project && fields.project.key) || key.split('-')[0];
         const product = readProduct((fields && fields.summary) || '', userData);
@@ -1124,21 +1128,17 @@
         return BUG_PRODUCTS.find(name => new RegExp(`(^|[^\\w])${name}(?![\\w])`, 'i').test(searchIn)) || '';
     }
 
-    /** Haalt de regels uit USER_DATA_FIELDS uit de tekst van de beschrijving: [{ name, value }]. */
+    /** Elke regel uit USER_DATA_FIELDS met de waarde uit `text` ('' als die er niet in staat): [{ name, value }]. */
     function readUserData(text) {
         const lines = text.split('\n');
-        const found = [];
-        USER_DATA_FIELDS.forEach(name => {
+        return USER_DATA_FIELDS.map(name => {
             const pattern = new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*(.*\\S)\\s*$`, 'i');
             for (const line of lines) {
                 const match = line.match(pattern);
-                if (match) {
-                    found.push({ name, value: match[1] });
-                    break;
-                }
+                if (match) return { name, value: match[1] };
             }
+            return { name, value: '' };
         });
-        return found;
     }
 
     /** Platte tekst uit Jira's beschrijving (ADF); elke regel en alinea op een eigen regel. */
@@ -1158,8 +1158,9 @@
         return BUG_TEMPLATE.map(section => {
             const heading = escapeHtml(section.heading);
             let html = `<p>${section.bold ? `<strong>${heading}</strong>` : heading}</p>`;
-            if (section.userData && userData.length) {
-                html += `<p>${userData.map(item => `${escapeHtml(item.name)}: ${escapeHtml(item.value)}`).join('<br>')}</p>`;
+            if (section.userData) {
+                const items = userData.length ? userData : USER_DATA_FIELDS.map(name => ({ name, value: '' }));
+                html += `<p>${items.map(item => `${escapeHtml(item.name)}: ${escapeHtml(item.value)}`).join('<br>')}</p>`;
             }
             return `${html}<p></p>`;
         }).join('');
