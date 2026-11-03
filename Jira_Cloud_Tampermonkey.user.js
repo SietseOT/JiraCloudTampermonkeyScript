@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Cloud - OT label badges
 // @namespace    https://onderwijstransparant.nl/
-// @version      1.7.0
+// @version      1.7.1
 // @description  Toont labels als badges in swimlane-koppen (Group: Story), op bordkaarten en in backlog-regels op Jira Cloud, inclusief divider-regels. Klapt in statusvensters "Log Work" open met alleen Time Spent. Nieuwe subtaken krijgen de componenten van de parent. Bug-knop in een geopend ticket maakt een gekoppelde OT-bug met sjabloon.
 // @author       OnderwijsTransparant
 // @match        https://onderwijstransparant.atlassian.net/*
@@ -18,7 +18,7 @@
     // Niet draaien in iframes (bijv. editors of ingesloten vensters)
     if (window.top !== window.self) return;
 
-    const SCRIPT_VERSION = '1.7.0';
+    const SCRIPT_VERSION = '1.7.1';
     const LOG_PREFIX = '[OT labels]';
 
     // =====================================================================
@@ -89,7 +89,7 @@
         {
             key: 'bugButton',
             title: 'Bug-knop in geopend ticket',
-            help: 'Rechtsboven in een geopend ticket (niet in space OT) staat een knop "Bug". Die opent "Create linked work item" met space OT, type Bug, component Incident Software en het bug-sjabloon in de beschrijving, inclusief de schoolgegevens uit het ticket. De samenvatting begint met regio en product (bijv. "MHR - POVO - ") en het veld Region krijgt de space van die regio. Je controleert alles en klikt zelf op Create.'
+            help: 'Rechtsboven in een geopend ticket (niet in space OT) staat een knop "Bug". Die opent "Create linked work item" met space OT, type Bug, component Incident Producten en het bug-sjabloon in de beschrijving, inclusief de schoolgegevens uit het ticket. De samenvatting begint met regio en product (bijv. "MHR - POVO - ") en het veld Region krijgt de space van die regio. Je controleert alles en klikt zelf op Create.'
         }
     ];
 
@@ -806,7 +806,7 @@
     // =====================================================================
     const BUG_PROJECT_KEY = 'OT';
     const BUG_ISSUE_TYPE = 'Bug';
-    const BUG_COMPONENT = 'Incident Software';
+    const BUG_COMPONENT = 'Incident Producten';
     // Veld "Region" (keuze uit spaces) in OT; krijgt de space met de regiocode.
     // Het ID is per Jira-omgeving vast; opzoeken via /rest/api/3/field als het ooit verandert.
     const BUG_REGION_FIELD = 'customfield_10132';
@@ -887,9 +887,10 @@
             }
             const { userData, summaryPrefix, regionCode } = await sourceData;
             await selectRegion(regionCode);
-            await fillDescription(buildBugHtml(userData));
+            const descriptionFilled = await fillDescription(buildBugHtml(userData));
             // Als laatste: daarna staat de cursor in de samenvatting, achter het voorvoegsel
             await fillSummary(summaryPrefix);
+            if (!descriptionFilled) throw new Error('beschrijving niet ingevuld');
             button.textContent = '🐞 Bug';
         } catch (err) {
             console.warn(LOG_PREFIX, 'Bug aanmaken: invullen mislukt', err);
@@ -1017,6 +1018,7 @@
         }
     }
 
+    /** Vult de (lege) beschrijving met `html`. Geeft false als dat niet lukte. */
     async function fillDescription(html) {
         const field = createModal().querySelector(SELECTORS.createField('description'));
         let editor = field.querySelector(SELECTORS.richTextEditor);
@@ -1025,18 +1027,51 @@
             if (placeholder) placeholder.click();
             editor = await waitFor(() => field.querySelector(SELECTORS.richTextEditor), 'beschrijving');
         }
-        // Al iets ingetypt? Dan niets overschrijven. De grijze voorbeeldtekst
-        // ("Add a description…") is een niet-bewerkbaar blokje en telt niet mee.
+        // Al iets ingetypt? Dan niets overschrijven.
+        if (editorHasText(editor)) return true;
+        editor.focus();
+        // Plakken als HTML: de editor zet dat zelf om naar Jira-opmaak (vet, regels).
+        // Bij voorkeur via de editor zelf (ProseMirror: view.pasteHTML). Een nagemaakt
+        // plak-event werkt niet in Firefox: daar draait Tampermonkey het script
+        // afgeschermd en mag de pagina de nagemaakte klembordinhoud niet lezen.
+        const view = findEditorView(editor);
+        if (view && typeof view.pasteHTML === 'function') {
+            view.pasteHTML(html);
+        } else {
+            const data = new DataTransfer();
+            data.setData('text/html', html);
+            const plain = new DOMParser().parseFromString(html.replace(/<br>|<\/p>/g, '\n'), 'text/html').body.textContent;
+            data.setData('text/plain', plain);
+            editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return editorHasText(field.querySelector(SELECTORS.richTextEditor) || editor);
+    }
+
+    /** Staat er tekst in de editor? De grijze voorbeeldtekst ("Add a description…") telt niet mee. */
+    function editorHasText(editor) {
         const typed = editor.cloneNode(true);
         typed.querySelectorAll('[contenteditable="false"]').forEach(el => el.remove());
-        if (typed.textContent.trim()) return;
-        editor.focus();
-        // Plakken als HTML: de editor zet dat zelf om naar Jira-opmaak (vet, regels)
-        const data = new DataTransfer();
-        data.setData('text/html', html);
-        const plain = new DOMParser().parseFromString(html.replace(/<br>|<\/p>/g, '\n'), 'text/html').body.textContent;
-        data.setData('text/plain', plain);
-        editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+        return Boolean(typed.textContent.trim());
+    }
+
+    /**
+     * De ProseMirror-editor achter het tekstvak, uit de React-gegevens van de pagina
+     * (prop "editorView"), of null. In Firefox zijn die alleen via wrappedJSObject te zien.
+     */
+    function findEditorView(editor) {
+        try {
+            const page = editor.wrappedJSObject || editor;
+            const fiberKey = Object.keys(page).find(key => key.startsWith('__reactFiber'));
+            let fiber = fiberKey && page[fiberKey];
+            for (let depth = 0; fiber && depth < 60; depth++, fiber = fiber.return) {
+                const view = fiber.memoizedProps && fiber.memoizedProps.editorView;
+                if (view && view.dom && view.dom.isSameNode(editor)) return view;
+            }
+        } catch (err) {
+            console.debug(LOG_PREFIX, 'Editor niet gevonden, terugval op plakken', err);
+        }
+        return null;
     }
 
     /** Zet `prefix` in het (lege) veld Summary en zet de cursor erachter. */
